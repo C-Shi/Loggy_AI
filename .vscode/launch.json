@@ -16,6 +16,19 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/services/detector"
             }
+        },
+        {
+            "name": "FastAPI: Dev Server",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "fastapi",
+            "args": [
+                "dev",
+                "main.py"
+            ],
+            "jinja": true,
+            "cwd": "${workspaceFolder}/services/detector/web",
+            "console": "integratedTerminal"
         }
     ]
 }

@@ -32,7 +32,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
         keywords: Optional[List[str]] = None,
-    ) -> List[StructEntry | TextEntry]:
+    ) -> List[Dict[str, Any]]:
         """
         Fetches logs from Google Cloud Logging based on various filtering criteria.
 
@@ -93,7 +93,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
 
         gcp_filter_string = " AND ".join(filters) if filters else None
 
-        fetched_logs: List[StructEntry | TextEntry] = []
+        fetched_logs: List[Dict[str, Any]] = []
         resource_names = [f"projects/{self.project_id}"]
 
         for entry in self.client.list_entries(
@@ -105,7 +105,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
                 limit, 100
             ),  # Fetch up to 'limit' results, but use a reasonable page size
         ):
-            fetched_logs.append(entry)
+            fetched_logs.append(entry.to_api_repr())
             if len(fetched_logs) >= limit:
                 break
 
