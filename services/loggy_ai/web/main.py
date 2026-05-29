@@ -1,14 +1,21 @@
 from fastapi import FastAPI
 from app import LoggyAI
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Optional, List
 
 app = FastAPI()
 
 
 class ConfigItem(BaseModel):
-    provider: str
-    project_id: str
+    provider: str = "google"
+    project: Optional[str] = None
+    limit: int = 100
+    log: Optional[str] = None
+    severity: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+    keywords: Optional[List[str]] = None
 
 
 @app.get("/health")
@@ -18,12 +25,24 @@ def health():
 
 @app.post("/run")
 def run(config: ConfigItem):
-    logger = LoggyAI.create(config.provider, config.project_id)
+    logger = LoggyAI.create(config.provider)
+    if config.start:
+        start_time = datetime.strptime(config.start, "%Y-%m-%d %H:%M:%S")
+    else:
+        start_time = datetime.now() - timedelta(days=1)
+
+    if config.end:
+        end_time = datetime.strptime(config.end, "%Y-%m-%d %H:%M:%S")
+    else:
+        end_time = datetime.now()
+
     logs = logger.fetch_logs(
         limit=100,
-        severity_level="ERROR",
-        keywords=["us-central1-a"],
-        start_time=datetime(2026, 5, 20),
+        log_name=config.log,
+        severity_level=config.severity,
+        keywords=config.keywords,
+        start_time=start_time,
+        end_time=end_time,
     )
 
     return logs

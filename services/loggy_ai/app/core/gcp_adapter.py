@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from google.cloud import logging
-from google.cloud.logging import StructEntry, TextEntry
+from google.auth import default
 from app.core.base import LogIngestor
 
 
@@ -19,10 +19,15 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         "EMERGENCY",
     ]
 
-    def __init__(self, project_id: str) -> None:
+    def __init__(self, project: str = None) -> None:
         # initalize Logging Client without Credential. Rely on ADC behavior
-        self.project_id = project_id
-        self.client = logging.Client(project=project_id)
+        _, project_id = default()
+        self.project = project_id
+
+        if project:
+            self.project = project
+
+        self.client = logging.Client(project=self.project)
 
     def fetch_logs(
         self,
@@ -41,7 +46,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
             log_name (Optional[str]): The specific log name to filter by.
                                        E.g., "syslog", "cloudtrail.googleapis.com%2Factivity".
                                        The full logName format internally becomes
-                                       "projects/PROJECT_ID/logs/LOG_ID".
+                                       "projects/project/logs/LOG_ID".
             severity_level (Optional[str]): The minimum severity level to filter by.
                                             Valid values include "DEBUG", "INFO", "NOTICE",
                                             "WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY".
@@ -64,8 +69,8 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         # Construct filter string based on provided parameters
         if log_name:
             # Assuming log_name is the ID part (e.g., "syslog", "cloudtrail.googleapis.com%2Factivity")
-            # The full logName format for filtering is projects/PROJECT_ID/logs/LOG_ID
-            filters.append(f'logName="projects/{self.project_id}/logs/{log_name}"')
+            # The full logName format for filtering is projects/project/logs/LOG_ID
+            filters.append(f'logName="projects/{self.project}/logs/{log_name}"')
 
         if (
             severity_level
@@ -94,7 +99,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         gcp_filter_string = " AND ".join(filters) if filters else None
 
         fetched_logs: List[Dict[str, Any]] = []
-        resource_names = [f"projects/{self.project_id}"]
+        resource_names = [f"projects/{self.project}"]
 
         for entry in self.client.list_entries(
             resource_names=resource_names,
