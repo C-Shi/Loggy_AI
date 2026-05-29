@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app import LogLensAI
+from app import LoggyAI
 from pydantic import BaseModel
 from datetime import datetime
 
@@ -18,7 +18,7 @@ def health():
 
 @app.post("/run")
 def run(config: ConfigItem):
-    logger = LogLensAI.create(config.provider, config.project_id)
+    logger = LoggyAI.create(config.provider, config.project_id)
     logs = logger.fetch_logs(
         limit=100,
         severity_level="ERROR",

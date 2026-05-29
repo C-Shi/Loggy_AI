@@ -2,7 +2,7 @@ from app.core.gcp_adapter import GoogleCloudLoggingAdapter
 from app.core.base import LogIngestor
 
 
-class LogLensAI:
+class LoggyAI:
     # Factory Pattern
     @classmethod
     def create(cls, provider: str, project_id: str) -> LogIngestor:
