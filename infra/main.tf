@@ -36,6 +36,11 @@ resource "google_artifact_registry_repository" "loggy-ai-image" {
       keep_count = 1
     }
   }
+
+  vulnerability_scanning_config {
+    enablement_config = "DISABLED"
+  }
+
 }
 
 

@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from google.cloud.logging import StructEntry, TextEntry
 
 
 class LogIngestor(ABC):
@@ -14,5 +13,5 @@ class LogIngestor(ABC):
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
         keywords: Optional[List[str]] = None,
-    ) -> List[StructEntry | TextEntry]:
+    ) -> List[Dict[str, Any]]:
         pass
