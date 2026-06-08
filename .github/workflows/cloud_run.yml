@@ -1,13 +1,17 @@
 name: Cloud Run
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Terraform"]
+    types:
+      - completed
     branches:
       - main
 
 jobs:
-  build_and_dploy:
+  build_and_deploy:
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
 
