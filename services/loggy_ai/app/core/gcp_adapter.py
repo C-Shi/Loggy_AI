@@ -3,6 +3,7 @@ from datetime import datetime
 from google.cloud import logging
 from google.auth import default
 from app.core.base import LogIngestor
+from app.core.gemini import GeminiLogAnalyzer
 
 
 class GoogleCloudLoggingAdapter(LogIngestor):
@@ -28,6 +29,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
             self.project = project
 
         self.client = logging.Client(project=self.project)
+        self.analyzer = GeminiLogAnalyzer()
 
     def fetch_logs(
         self,
@@ -115,3 +117,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
                 break
 
         return fetched_logs
+
+    def analyze(self, logs) -> dict:
+        response = self.analyzer.analyze_logs(logs)
+        return response.parsed

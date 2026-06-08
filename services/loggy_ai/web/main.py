@@ -45,4 +45,5 @@ def run(config: ConfigItem):
         end_time=end_time,
     )
 
-    return logs
+    response = logger.analyze(logs)
+    return response
