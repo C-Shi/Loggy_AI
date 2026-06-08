@@ -55,4 +55,4 @@ jobs:
         run: |
           cd infra
           terraform init -backend-config="bucket=${{ vars.BUCKET_NAME }}"
-          terraform apply -var="project_id=${{ vars.GOOGLE_PROJECT }} -auto-approve"
+          terraform apply -var="project_id=${{ vars.GOOGLE_PROJECT }}" -auto-approve
