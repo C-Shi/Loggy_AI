@@ -3,7 +3,7 @@ from datetime import datetime
 from google.cloud import logging
 from google.auth import default
 from app.core.base import LogIngestor
-from app.core.gemini import GeminiLogAnalyzer
+from services.loggy_ai.app.core.google_ai import GeminiLogAnalyzer
 
 
 class GoogleCloudLoggingAdapter(LogIngestor):
