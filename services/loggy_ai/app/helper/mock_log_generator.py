@@ -1,6 +1,10 @@
 import random
-from typing import List, Dict, Any
 from google.cloud.logging_v2 import Client, Resource
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+PROJECT_ID = os.getenv("PROJECT_ID")
 
 
 class MockLogGenerator:
@@ -29,7 +33,8 @@ class MockLogGenerator:
             ],
             "ERROR": [
                 {"message": "Failed to write record to secondary database cluster", "error_code": "DB_CONN_TIMEOUT"},
-                {"message": "Token verification signature mismatch", "error_code": "AUTH_INVALID_JWT"}
+                {"message": "Token verification signature mismatch", "error_code": "AUTH_INVALID_JWT"},
+                {"message": "Email test@gmail.com already existed.", "error_code": "DUPLICATE_EMAIL"},
             ],
             "CRITICAL": [
                 {"message": "Cascading thread exhaustion across cluster pool", "error_code": "SYS_FATAL_OOM"},
@@ -54,3 +59,7 @@ class MockLogGenerator:
                 resource=Resource(**resource),
                 severity=severity
             )
+
+if __name__ == "__main__":
+    generator = MockLogGenerator(project=PROJECT_ID)
+    generator.batch(100)

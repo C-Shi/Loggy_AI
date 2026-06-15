@@ -1,7 +1,10 @@
 from google import genai
 import json
 from pydantic import BaseModel, Field
+from app.helper.log_redactor import LogRedactor
+from dotenv import load_dotenv
 
+load_dotenv()
 
 class ActionPlan(BaseModel):
     step: int = Field(description="step number starting from 1")
@@ -43,7 +46,7 @@ class GeminiLogAnalyzer:
     def __init__(self, model_name: str = "gemini-3.1-flash-lite") -> None:
         self.model_name = model_name
         self.client = genai.Client()
-
+        self.redactor = LogRedactor()
         self.SYSTEM_INSTRUCTION = """
         You are a staff Site Reliability Engineer (SRE) and Cloud DevOps expert specialized in Google Cloud platform (GCP). You are analyzing raw GCP logs.
         Your task is to identify underlying issues, deduplicate repetitive noise and provide actionable remediation steps. You will be proivded with array of dictionareis, where each represent a single log entry.
@@ -69,14 +72,15 @@ class GeminiLogAnalyzer:
             else:
                 raise Exception(validated.reason)
 
-            config = genai.types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_schema=LogAnalysisReport,
-                response_mime_type="application/json",
-                temperature=0.1,
-            )
+        config = genai.types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_schema=LogAnalysisReport,
+            response_mime_type="application/json",
+            temperature=0.1,
+        )
 
-        minified_logs = self.minified_log(logs)
+        redacted_logs = self.redactor.sanitize_log_batch(logs)
+        minified_logs = self.minified_log(redacted_logs)
         response = self.client.models.generate_content(
             model=self.model_name,
             config=config,
