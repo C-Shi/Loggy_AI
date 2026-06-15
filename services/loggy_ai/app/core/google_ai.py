@@ -3,6 +3,7 @@ import json
 from pydantic import BaseModel, Field
 from app.helper.log_redactor import LogRedactor
 from dotenv import load_dotenv
+from app.helper.error import PromptValidationError
 
 load_dotenv()
 
@@ -70,7 +71,8 @@ class GeminiLogAnalyzer:
                     f"\n\n Additional Rule: {validated.refined_instruction}"
                 )
             else:
-                raise Exception(validated.reason)
+                print(validated.reason)
+                raise PromptValidationError("Prompt contain unsafe instruction", payload_size=len(logs))
 
         config = genai.types.GenerateContentConfig(
             system_instruction=system_instruction,
@@ -113,10 +115,10 @@ class GeminiLogAnalyzer:
         )
 
         return self.client.models.generate_content(
-            model="gemini-2-flash-lite",
+            model="gemini-2.5-flash-lite",
             config=config,
-            contents=[genai.types.Part.from_text(data=prompt)],
-        )
+            contents=[genai.types.Part.from_text(text=prompt)],
+        ).parsed
 
     def minified_log(self, logs: list):
         minified_json = json.dumps(logs, separators=(",", ":"))
