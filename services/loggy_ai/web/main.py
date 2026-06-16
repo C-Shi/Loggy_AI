@@ -1,8 +1,12 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from dotenv import load_dotenv
 from app import LoggyAI
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional, List
+from app.helper.error import PromptValidationError, LogPayloadLimitError
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -37,7 +41,7 @@ def run(config: ConfigItem):
         end_time = datetime.now()
 
     logs = logger.fetch_logs(
-        limit=100,
+        limit=config.limit,
         log_name=config.log,
         severity_level=config.severity,
         keywords=config.keywords,
@@ -45,5 +49,8 @@ def run(config: ConfigItem):
         end_time=end_time,
     )
 
-    response = logger.analyze(logs)
+    try:
+        response = logger.analyze(logs)
+    except (PromptValidationError, LogPayloadLimitError) as e:
+        raise HTTPException(400, detail=e.message)
     return response

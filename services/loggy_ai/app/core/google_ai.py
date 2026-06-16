@@ -1,76 +1,97 @@
+# pylint: disable=line-too-long
 """
 GCP log analysis via Google Gemini (google-genai SDK).
 Accepts native Cloud Logging entries (API representation dicts), sends them
 to a structured-output Gemini model, and returns incident summaries with
 root-cause hypotheses and remediation steps.
 Security: raw logs may contain secrets/PII — callers should redact before
-invoking analyze_logs when possible. Optional user instructions are validated
-by a separate guardrail model before being merged into the system prompt.
+invoking analyze_logs when possible. Optional user instructions are validated by a deterministic denylist and a
+separate guardrail model before being merged into the system prompt.
 """
 
 import json
+import re
 from typing import Any
-from dotenv import load_dotenv
 from google import genai
-from pydantic import BaseModel, Field
+from app.core.models import LogAnalysisReport, ValidationResult
 from app.helper.log_redactor import LogRedactor
-from app.helper.error import PromptValidationError
+from app.helper.error import LogPayloadLimitError, PromptValidationError
 
-load_dotenv()
+# Defaults sized for SMB monitoring: a focused daily ERROR/WARNING window or incident
+# burst without sending an entire noisy day of logs to the model (~100-130K input tokens).
+DEFAULT_MAX_LOG_ENTRIES = 500
+DEFAULT_MAX_PAYLOAD_BYTES = 512 * 1024  # 512 KiB of minified, redacted JSON
 
-
-class ActionPlan(BaseModel):
-    """One remediation step in an incident action plan."""
-
-    step: int = Field(description="step number starting from 1")
-    action: str = Field(description="Immediate step to resolve the issue.")
-    warning: str = Field(description="Anything you would be extra cautious about")
-
-
-class LogAnalysisResponse(BaseModel):
-    """Structured analysis for a single consolidated incident."""
-
-    operational_summary: str = Field(
-        description="1-sentence summary of what happens, resources are involved, and the serverity"
-    )
-    severity: str = Field(
-        description=(
-            "1 sentense describe how severe this incident's impact from business persepctive"
-            "Use severity exactly one of: LOW, MEDIUM, HIGH, CRITICAL."
-            "Base this on business impact (revenue, availability, data integrity, compliance), not log level alone."
-        )
-    )
-    repetitive_issue: bool = Field(description="if this issue has arise multiple time")
-    root_cause: str = Field(
-        description="Describe if this is a user error or DevOps error or root code error"
-    )
-    ai_suggestion: str = Field(
-        description="Your though about this error and where you would start"
-    )
-    first_seen_timestamp: str = Field(
-        description="ISO 8601 timestamp of earliest matching log entry."
-    )
-    last_seen_timestamp: str = Field(
-        description="ISO 8601 timestamp of latest matching log entry."
-    )
-    action_plan: list[ActionPlan] = Field(
-        description="A list of remediation steps to resolve the issue."
-    )
-
-
-class LogAnalysisReport(BaseModel):
-    """Top-level response: one or more deduplicated incidents."""
-
-    incidents: list[LogAnalysisResponse]
-
-
-class ValidationResult(BaseModel):
-    """Result of instruction validation."""
-
-    is_safe: bool = Field(description="Whether the instruction is safe to use")
-    reason: str = Field(description="Reasoning for the safety decision")
-    refined_instruction: str = Field(description="The cleaned instruction if safe")
-
+# Deterministic guardrails run before LLM validation; each tuple is (pattern, rejection reason).
+_PROMPT_DENY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\b(?:ignore|disregard|forget)\b.{0,40}\b(?:previous|prior|above|earlier|system)\b.{0,20}\b(?:instructions?|rules?|prompts?)\b",
+            re.I | re.DOTALL,
+        ),
+        "Instruction attempts to override system rules.",
+    ),
+    (
+        re.compile(
+            r"\boverride\b.{0,20}\b(?:system|previous)\b.{0,20}\b(?:prompt|instructions?|rules?)\b",
+            re.I | re.DOTALL,
+        ),
+        "Instruction attempts to override system rules.",
+    ),
+    (
+        re.compile(
+            r"\b(?:do\s*n'?t|do\s+not)\s+follow\b.{0,20}\b(?:rules?|instructions?|prompt)\b",
+            re.I | re.DOTALL,
+        ),
+        "Instruction attempts to override system rules.",
+    ),
+    (
+        re.compile(
+            r"\b(?:reveal|show|display|print|expose|repeat)\b.{0,30}\b(?:system|original|hidden|full)\b.{0,20}\b(?:prompt|instructions?)\b",
+            re.I | re.DOTALL,
+        ),
+        "Instruction attempts to expose system prompt content.",
+    ),
+    (
+        re.compile(
+            r"\b(?:output|dump|return|export|include)\b.{0,20}\b(?:raw|full|complete|unredacted|original)\b.{0,20}\b(?:logs?|payloads?|entries?|data)\b",
+            re.I | re.DOTALL,
+        ),
+        "Instruction requests raw or unredacted log output.",
+    ),
+    (
+        re.compile(
+            r"\b(?:output|dump|return|export)\b.{0,20}\b(?:all\s+)?(?:raw\s+)?(?:pii|passwords?|tokens?|secrets?|credentials?|api\s*keys?)\b",
+            re.I | re.DOTALL,
+        ),
+        "Instruction requests sensitive credential output.",
+    ),
+    (
+        re.compile(
+            r"\b(?:act\s+as|you\s+are\s+now|pretend\s+(?:to\s+be|you\s+are)|roleplay\s+as)\b",
+            re.I,
+        ),
+        "Instruction attempts to change the assistant role.",
+    ),
+    (
+        re.compile(
+            r"\b(?:respond|output|return)\s+(?:in|as|with)\s+(?:csv|xml|html|markdown|yaml|plain\s+text|a\s+poem)\b",
+            re.I,
+        ),
+        "Instruction attempts to change the required JSON output format.",
+    ),
+    (
+        re.compile(r"\b(?:no|without|not|skip|avoid)\s+json\b", re.I),
+        "Instruction attempts to change the required JSON output format.",
+    ),
+    (
+        re.compile(
+            r"\b(?:bypass|disable|turn\s+off)\b.{0,20}\b(?:guardrails?|safety|filters?|validation)\b",
+            re.I | re.DOTALL,
+        ),
+        "Instruction attempts to disable safety guardrails.",
+    ),
+)
 
 class GeminiLogAnalyzer:
     """
@@ -78,8 +99,20 @@ class GeminiLogAnalyzer:
     Uses Application Default Credentials via genai.Client().
     """
 
-    def __init__(self, model_name: str = "gemini-3.1-flash-lite") -> None:
+    def __init__(
+        self,
+        model_name: str = "gemini-3.1-flash-lite",
+        max_log_entries: int = DEFAULT_MAX_LOG_ENTRIES,
+        max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
+    ) -> None:
+        if max_log_entries < 1:
+            raise ValueError("max_log_entries must be at least 1")
+        if max_payload_bytes < 1:
+            raise ValueError("max_payload_bytes must be at least 1")
+
         self.model_name = model_name
+        self.max_log_entries = max_log_entries
+        self.max_payload_bytes = max_payload_bytes
         self.client = genai.Client()
         self.redactor = LogRedactor()
         # pylint: disable=line-too-long
@@ -108,8 +141,12 @@ class GeminiLogAnalyzer:
         Returns:
             Parsed LogAnalysisReport from the model response.
         Raises:
-            ValueError: If instruction fails safety validation.
+            PromptValidationError: If instruction fails safety validation.
+            LogPayloadLimitError: If the log batch exceeds configured size limits.
         """
+        if len(logs) == 0:
+            return LogAnalysisReport(incidents=[])
+
         system_instruction = self.system_instruction
         if instruction:
             validated = self.validate_prompt(instruction)
@@ -131,7 +168,7 @@ class GeminiLogAnalyzer:
         )
 
         redacted_logs = self.redactor.sanitize_log_batch(logs)
-        minified_logs = self.minified_log(redacted_logs)
+        minified_logs = self._enforce_input_limits(redacted_logs)
         response = self.client.models.generate_content(
             model=self.model_name,
             config=config,
@@ -141,15 +178,45 @@ class GeminiLogAnalyzer:
                 )
             ],
         )
-        return response
+        return response.parsed
+
+    def _enforce_input_limits(self, logs: list) -> bytes:
+        """Ensure redacted log batch fits configured entry and byte caps."""
+        if len(logs) > self.max_log_entries:
+            raise LogPayloadLimitError(
+                "Log batch exceeds the maximum number of entries allowed for analysis.",
+                entry_count=len(logs),
+                max_log_entries=self.max_log_entries,
+            )
+
+        minified_logs = self.minified_log(logs)
+        if len(minified_logs) > self.max_payload_bytes:
+            raise LogPayloadLimitError(
+                "Redacted log payload exceeds the maximum byte size allowed for analysis.",
+                payload_bytes=len(minified_logs),
+                max_payload_bytes=self.max_payload_bytes,
+            )
+        return minified_logs
+
+    def _assert_prompt_passes_denylist(self, prompt: str) -> None:
+        """Reject known unsafe instruction patterns before calling the LLM guardrail."""
+        normalized = prompt.strip()
+        if not normalized:
+            raise PromptValidationError(
+                "Instruction cannot be empty.", payload_size=len(prompt)
+            )
+        for pattern, reason in _PROMPT_DENY_PATTERNS:
+            if pattern.search(normalized):
+                raise PromptValidationError(reason, payload_size=len(prompt))
 
     def validate_prompt(self, prompt: str) -> ValidationResult:
         """
         Evaluate a custom instruction against security and format rules.
-        Uses a separate model with temperature 0 for deterministic guardrails.
+        Runs a deterministic denylist first, then a separate model with temperature 0.
         """
         if len(prompt) > 200:
             raise PromptValidationError("Maximum prompt character limit is 200", payload_size=len(prompt))
+        self._assert_prompt_passes_denylist(prompt)
         # pylint: disable=line-too-long
         rules = """
             You are a strict security and compliance guardrail for an enterprise GCP log analyzer. 
