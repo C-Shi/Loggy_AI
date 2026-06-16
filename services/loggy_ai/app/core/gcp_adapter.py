@@ -119,5 +119,5 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         return fetched_logs
 
     def analyze(self, logs) -> dict:
-        response = self.analyzer.analyze_logs(logs)
+        response = self.analyzer.analyze_logs(logs, "Return in pure string, do not return json")
         return response.parsed
