@@ -15,3 +15,7 @@ class LogIngestor(ABC):
         keywords: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         pass
+
+    @abstractmethod
+    def analyze(self, logs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        pass

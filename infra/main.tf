@@ -43,4 +43,18 @@ resource "google_artifact_registry_repository" "loggy-ai-image" {
 
 }
 
+resource "google_secret_manager_secret" "gemini_key" {
+  secret_id = "gemini-key"
 
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_iam_member" "cloud_run_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.gemini_key.id
+  role      = "roles/secretmanager.secretAccessor"
+
+  member = "serviceAccount: ${google_service_account.sa_loggy_ai_runtime.email}"
+}

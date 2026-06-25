@@ -1,2 +1,4 @@
 google-cloud-logging
+google-genai
 fastapi[standard]
+python-dotenv
