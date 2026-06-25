@@ -47,3 +47,5 @@ jobs:
             --no-allow-unauthenticated \
             --platform=managed \
             --service-account=sa-loggy-ai-runtime@${{ vars.GOOGLE_PROJECT }}.iam.gserviceaccount.com
+            --set-secrets="GEMINI_API_KEY=gemini-key:latest"
+            --set-env-vars="PROJECT_ID=${{ vars.GOOGLE_PROJECT }}"
