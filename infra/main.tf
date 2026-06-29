@@ -35,9 +35,10 @@ resource "google_service_account" "sa_loggy_ai_caller" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "loggy_ai_caller_iam" {
-  name   = data.google_cloud_run_v2_service.loggy_ai.name
-  role   = "roles/run.invoker"
-  member = "serviceAccount:${google_service_account.sa_loggy_ai_caller.email}"
+  name     = data.google_cloud_run_v2_service.loggy_ai.name
+  location = data.google_cloud_run_v2_service.loggy_ai.location
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.sa_loggy_ai_caller.email}"
 }
 
 
@@ -116,7 +117,7 @@ resource "google_eventarc_trigger" "loggy_ai_eventarc" {
     }
   }
   retry_policy {
-    max_attempts = 3
+    max_attempts = 1
   }
 
   service_account = google_service_account.sa_loggy_ai_caller.email
