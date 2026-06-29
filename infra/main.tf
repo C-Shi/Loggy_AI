@@ -108,6 +108,7 @@ resource "google_eventarc_trigger" "loggy_ai_eventarc" {
   destination {
     cloud_run_service {
       service = data.google_cloud_run_v2_service.loggy_ai.name
+      region  = data.google_cloud_run_v2_service.loggy_ai.location
       path    = "/trigger"
     }
   }
