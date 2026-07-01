@@ -6,7 +6,8 @@ import requests
 gcp_error_log = {
     "textPayload": "Error: Connection timed out in service module.",
     "severity": "ERROR",
-    "resource": {"type": "cloud_run_revision"}
+    "resource": {"type": "cloud_run_revision"},
+    "insertId": "1234567890"
 }
 
 # 2. Pub/Sub requires the data to be base64 encoded [cite: 7, 39]
