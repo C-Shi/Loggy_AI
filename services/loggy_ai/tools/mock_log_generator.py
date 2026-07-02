@@ -57,9 +57,9 @@ class MockLogGenerator:
                     **log_template
                 },
                 resource=Resource(**resource),
-                severity="ERROR"
+                severity=severity
             )
 
 if __name__ == "__main__":
     generator = MockLogGenerator(project=PROJECT_ID)
-    generator.batch(1)
+    generator.batch(10)

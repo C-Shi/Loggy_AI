@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from app import LoggyAI
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, List
+from typing import Optional, List, Dict
 from app.helper.error import PromptValidationError, LogPayloadLimitError
 from .helper import write_to_bucket
 
@@ -26,9 +26,15 @@ class ConfigItem(BaseModel):
     end: Optional[str] = None
     keywords: Optional[List[str]] = None
 
-class CloudEvent(BaseModel):
-    data: Dict[str, Any]
+class PubSubMessage(BaseModel):
+    data: str
+    messageId: str
+    publishTime: str
+    attributes: Dict[str, str] = {}
 
+class MessagePublishedData(BaseModel):
+    subscription: str
+    message: PubSubMessage
 
 @app.get("/health")
 def health():
@@ -65,12 +71,10 @@ def run(config: ConfigItem):
 
 @app.post("/trigger")
 # at the moment, this only accept on log
-def trigger(payload: CloudEvent):
-    logger.info(f"Received CloudEvent Data: ${json.dumps(payload.data)}")
+def trigger(payload: MessagePublishedData):
+    logger.info(f"Received CloudEvent Data: {json.dumps(payload.model_dump())}")
 
-    event_data = payload.data
-
-    encoded_log = event_data.get("message", {}).get("data", {})
+    encoded_log = payload.message.data
 
     decoded_log = base64.b64decode(encoded_log).decode("utf-8")
     log_entry = json.loads(decoded_log)
