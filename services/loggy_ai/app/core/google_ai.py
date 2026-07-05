@@ -93,6 +93,7 @@ _PROMPT_DENY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
+
 class GeminiLogAnalyzer:
     """
     Sends GCP log batches to Gemini with JSON schema-constrained output.
@@ -128,6 +129,7 @@ class GeminiLogAnalyzer:
         5. No personally identifiable information, password, API keys or sensitive financials information should be included in output
         6. Analyze severity about each incident. The analysis should based on the business impact, not software impact. 
         7. If logs do not contain enough context to identify a root cause, state that explicitly in root_cause and ai_suggestion. Do not invent resources, code paths, or timelines not present in the input.
+        8. If the log contains a service name under resource.labels, include it in the service_name field. Otherwise, leave it as None.
         """
 
     def analyze_logs(

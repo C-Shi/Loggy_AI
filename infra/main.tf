@@ -124,20 +124,6 @@ resource "google_eventarc_trigger" "loggy_ai_eventarc" {
   service_account = google_service_account.sa_loggy_ai_caller.email
 }
 
-resource "google_storage_bucket" "loggy_ai_report" {
-  name     = "loggy-ai-report"
-  location = "us-west1"
-
-  uniform_bucket_level_access = true
-  public_access_prevention    = "enforced"
-}
-
-resource "google_storage_bucket_iam_member" "loggy_ai_report_runtime" {
-  bucket = google_storage_bucket.loggy_ai_report.name
-  role   = "roles/storage.objectAdmin"
-  member = "serviceAccount:${google_service_account.sa_loggy_ai_runtime.email}"
-}
-
 resource "google_firestore_database" "loggy_ai_report" {
   project          = var.project_id
   name             = "loggy-ai-report"

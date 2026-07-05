@@ -1,13 +1,54 @@
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from datetime import datetime
-from google.cloud import logging
+
 from google.auth import default
+from google.cloud import firestore, logging
+
 from app.core.base import LogIngestor
 from app.core.google_ai import GeminiLogAnalyzer
+from app.core.models import LogAnalysisReport
+
+_PERIOD_PATTERN = re.compile(
+    r"^\s*(\d+)\s*"
+    r"(s|sec|secs|second|seconds|"
+    r"m|min|mins|minute|minutes|"
+    r"h|hr|hrs|hour|hours|"
+    r"d|day|days)\s*$",
+    re.IGNORECASE,
+)
+
+_PERIOD_UNITS = {
+    "s": "seconds",
+    "sec": "seconds",
+    "secs": "seconds",
+    "second": "seconds",
+    "seconds": "seconds",
+    "m": "minutes",
+    "min": "minutes",
+    "mins": "minutes",
+    "minute": "minutes",
+    "minutes": "minutes",
+    "h": "hours",
+    "hr": "hours",
+    "hrs": "hours",
+    "hour": "hours",
+    "hours": "hours",
+    "d": "days",
+    "day": "days",
+    "days": "days",
+}
 
 
 class GoogleCloudLoggingAdapter(LogIngestor):
-    """Concrete adapter handling the plumbing with GCP Cloud Logging."""
+    """
+    GCP adapter for Cloud Logging ingestion, Gemini analysis, and Firestore report storage.
+
+    Uses Application Default Credentials for all Google Cloud clients.
+    """
+
+    REPORT_DATABASE = "loggy-ai-report"
+    REPORT_COLLECTION = "reports"
 
     SEVERITY_LEVEL = [
         "DEBUG",
@@ -20,8 +61,15 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         "EMERGENCY",
     ]
 
-    def __init__(self, project: str = None) -> None:
-        # initalize Logging Client without Credential. Rely on ADC behavior
+    def __init__(self, project: str = None, ai_tool: str = "gemini") -> None:
+        """
+        Initialize Cloud Logging, Firestore, and AI analyzer clients.
+
+        Args:
+            project: Optional GCP project ID. Defaults to ADC project.
+            ai_tool: AI backend identifier. Currently only ``"gemini"`` is supported.
+        """
+        # Initialize clients without explicit credentials; rely on ADC.
         _, project_id = default()
         self.project = project_id
 
@@ -29,7 +77,69 @@ class GoogleCloudLoggingAdapter(LogIngestor):
             self.project = project
 
         self.client = logging.Client(project=self.project)
-        self.analyzer = GeminiLogAnalyzer()
+        self.firestore_client = firestore.Client(
+            project=self.project, database=self.REPORT_DATABASE
+        )
+        if ai_tool == "gemini":
+            self.analyzer = GeminiLogAnalyzer()
+        else:
+            raise ValueError(f"Unsupported AI tool: {ai_tool}")
+
+    @staticmethod
+    def _parse_period(period: str) -> timedelta:
+        """Parse a lookback period string such as '5min', '1h', or '1 day'."""
+        match = _PERIOD_PATTERN.match(period)
+        if not match:
+            raise ValueError(
+                "Invalid period format. Use values like '5min', '1h', '2h', or '1 day'."
+            )
+
+        amount = int(match.group(1))
+        if amount < 1:
+            raise ValueError("Period must be at least 1.")
+
+        unit = _PERIOD_UNITS[match.group(2).lower()]
+        return timedelta(**{unit: amount})
+
+    @staticmethod
+    def _report_doc_to_dict(doc: firestore.DocumentSnapshot) -> Dict[str, Any]:
+        """Convert a Firestore document snapshot to a plain dictionary with its ID."""
+        data = doc.to_dict() or {}
+        data["id"] = doc.id
+        return data
+
+    def fetch_report(self, period: str) -> List[Dict[str, Any]]:
+        """
+        Fetch AI analysis reports from Firestore for the given lookback period.
+
+        Args:
+            period: Lookback window (e.g. "5min", "1h", "2h", "1d", "1 day").
+
+        Returns:
+            List of report documents as dictionaries, newest first.
+            Each document is expected to include a UTC ``created_at`` timestamp.
+        """
+        start_time = datetime.now(timezone.utc) - self._parse_period(period)
+        query = (
+            self.firestore_client.collection(self.REPORT_COLLECTION)
+            .where(filter=firestore.FieldFilter("created_at", ">=", start_time))
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+        )
+        return [self._report_doc_to_dict(doc) for doc in query.stream()]
+
+    def save_report(self, report: LogAnalysisReport) -> None:
+        """
+        Persist each incident in an analysis report to Firestore.
+
+        Args:
+            report: Structured analysis output from the AI analyzer.
+        """
+        created_at = datetime.now(timezone.utc)
+        for incident in report.incidents:
+            record = incident.model_dump()
+            record["incident_count"] = 1
+            record["created_at"] = created_at
+            self.firestore_client.collection(self.REPORT_COLLECTION).add(record)
 
     def fetch_logs(
         self,
@@ -118,6 +228,6 @@ class GoogleCloudLoggingAdapter(LogIngestor):
 
         return fetched_logs
 
-    def analyze(self, logs) -> dict:
-        response = self.analyzer.analyze_logs(logs)
-        return response
+    def analyze(self, logs: List[Dict[str, Any]]) -> LogAnalysisReport:
+        """Run AI analysis on a batch of Cloud Logging entries."""
+        return self.analyzer.analyze_logs(logs)
