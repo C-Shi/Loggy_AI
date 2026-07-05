@@ -138,4 +138,25 @@ resource "google_storage_bucket_iam_member" "loggy_ai_report_runtime" {
   member = "serviceAccount:${google_service_account.sa_loggy_ai_runtime.email}"
 }
 
+resource "google_firestore_database" "loggy_ai_report" {
+  project          = var.project_id
+  name             = "loggy-ai-report"
+  location_id      = "us-west1"
+  type             = "FIRESTORE_NATIVE"
+  database_edition = "STANDARD"
+  concurrency_mode = "OPTIMISTIC"
+}
+
+resource "google_project_iam_member" "loggy_ai_report_firestore" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.sa_loggy_ai_runtime.email}"
+
+  condition {
+    title       = "loggy-ai-report firestore access"
+    description = "Grant read/write access only to the loggy-ai-report Firestore database"
+    expression  = "resource.name == \"projects/${var.project_id}/databases/loggy-ai-report\""
+  }
+}
+
 
