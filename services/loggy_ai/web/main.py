@@ -1,14 +1,15 @@
 import base64
 import json
 import logging
-from fastapi import FastAPI, HTTPException
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
 from dotenv import load_dotenv
-from app import LoggyAI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict
-from app.helper.error import PromptValidationError, LogPayloadLimitError
-from .helper import write_to_bucket
+
+from app import LoggyAI
+from app.helper.error import LogPayloadLimitError, PromptValidationError
 
 load_dotenv()
 
@@ -17,6 +18,8 @@ logger = logging.getLogger("uvicorn.error")
 
 
 class ConfigItem(BaseModel):
+    """Request body for the /run log analysis endpoint."""
+
     provider: str = "google"
     project: Optional[str] = None
     limit: int = 100
@@ -26,23 +29,32 @@ class ConfigItem(BaseModel):
     end: Optional[str] = None
     keywords: Optional[List[str]] = None
 
+
 class PubSubMessage(BaseModel):
+    """Pub/Sub message envelope from a CloudEvent push subscription."""
+
     data: str
     messageId: str
     publishTime: str
     attributes: Dict[str, str] = {}
 
+
 class MessagePublishedData(BaseModel):
+    """CloudEvent payload for log-triggered analysis."""
+
     subscription: str
     message: PubSubMessage
 
+
 @app.get("/health")
 def health():
-    return 200, "OK"
+    """Liveness probe."""
+    return {"status": "ok"}
 
 
 @app.post("/run")
 def run(config: ConfigItem):
+    """Fetch logs from the configured provider and return AI analysis."""
     logAI = LoggyAI.create(config.provider)
     if config.start:
         start_time = datetime.strptime(config.start, "%Y-%m-%d %H:%M:%S")
@@ -69,9 +81,12 @@ def run(config: ConfigItem):
     except (PromptValidationError, LogPayloadLimitError) as e:
         raise HTTPException(400, detail=e.message)
 
+
 @app.post("/trigger")
-# at the moment, this only accept on log
 def trigger(payload: MessagePublishedData):
+    """
+    Analyze a single log entry pushed via Pub/Sub and persist the report to Firestore.
+    """
     logger.info(f"Received CloudEvent Data: {json.dumps(payload.model_dump())}")
 
     encoded_log = payload.message.data
@@ -79,17 +94,11 @@ def trigger(payload: MessagePublishedData):
     decoded_log = base64.b64decode(encoded_log).decode("utf-8")
     log_entry = json.loads(decoded_log)
 
-    insert_id = log_entry.get("insertId", None)
     logAI = LoggyAI.create(provider=ConfigItem().provider)
 
     try:
         response = logAI.analyze([log_entry])
-        report = response.incidents[0].model_dump()
-        report["insertId"] = insert_id
-
-        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        blob_name = f"report-{timestamp}.json"
-        write_to_bucket(report, "loggy-ai-report", blob_name)
-        return {"status": "ok", "report_path": f"gs://loggy-ai-report/{blob_name}"}
+        logAI.save_report(response)
+        return {"status": "ok"}
     except (PromptValidationError, LogPayloadLimitError) as e:
         raise HTTPException(400, detail=e.message)

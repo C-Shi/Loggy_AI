@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 
+
 class ActionPlan(BaseModel):
     """One remediation step in an incident action plan."""
 
@@ -14,11 +15,15 @@ class LogAnalysisResponse(BaseModel):
     operational_summary: str = Field(
         description="1-sentence summary of what happens, resources are involved, and the severity"
     )
+    service_name: str | None = Field(
+        description="If present in log, the name of the service that this incident is related to"
+    )
     severity: str = Field(
         description=(
-            "1 sentense describe how severe this incident's impact from business perspective"
-            "Use severity exactly one of: LOW, MEDIUM, HIGH, CRITICAL."
-            "Base this on business impact (revenue, availability, data integrity, compliance), not log level alone."
+            "1 sentence describing how severe this incident's impact is from a business perspective. "
+            "Use severity exactly one of: LOW, MEDIUM, HIGH, CRITICAL. "
+            "Base this on business impact (revenue, availability, data integrity, compliance), "
+            "not log level alone."
         )
     )
     repetitive_issue: bool = Field(description="if this issue has arise multiple time")
