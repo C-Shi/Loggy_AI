@@ -7,8 +7,8 @@ from google.auth import default
 from google.cloud import firestore, logging as cloud_logging
 
 from service.core.base import LogIngestor
-from service.core.google_ai import GeminiLogAnalyzer
 from service.core.models import LogAnalysisReport, LogAnalysisResponse
+from service.core.base import GenAIAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +66,13 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         "EMERGENCY",
     ]
 
-    def __init__(self, project: str = None, ai_tool: str = "gemini") -> None:
+    def __init__(self, ai_tool: GenAIAnalyzer, project: str = None) -> None:
         """
         Initialize Cloud Logging, Firestore, and AI analyzer clients.
 
         Args:
             project: Optional GCP project ID. Defaults to ADC project.
-            ai_tool: AI backend identifier. Currently only ``"gemini"`` is supported.
+            ai_tool: An instance of GenAIAnalyzer.
         """
         # Initialize clients without explicit credentials; rely on ADC.
         _, project_id = default()
@@ -85,10 +85,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         self.firestore_client = firestore.Client(
             project=self.project, database=self.REPORT_DATABASE
         )
-        if ai_tool == "gemini":
-            self.analyzer = GeminiLogAnalyzer()
-        else:
-            raise ValueError(f"Unsupported AI tool: {ai_tool}")
+        self.analyzer = ai_tool
 
     @staticmethod
     def _parse_period(period: str) -> timedelta:

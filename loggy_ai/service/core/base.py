@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
+from service.core.models import LogAnalysisReport, LogAnalysisResponse, RepetitionCheckResult, ValidationResult
+
 
 class LogIngestor(ABC):
     @abstractmethod
@@ -17,5 +19,26 @@ class LogIngestor(ABC):
         pass
 
     @abstractmethod
+    def save_report(self, report: LogAnalysisReport, source_log: dict | None = None) -> None:
+        pass
+
+    @abstractmethod
+    def fetch_report(self, period: str, severity: Optional[str] = None, service_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
     def analyze(self, logs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        pass
+
+class GenAIAnalyzer(ABC):
+    @abstractmethod
+    def analyze_logs(self, logs: List[Any], instruction: Optional[str] = None) -> LogAnalysisReport:
+        pass
+
+    @abstractmethod
+    def check_repetition(self, incident: LogAnalysisResponse, candidates: List[Dict[str, Any]]) -> RepetitionCheckResult:
+        pass
+
+    @abstractmethod
+    def validate_prompt(self, prompt: str) -> ValidationResult:
         pass

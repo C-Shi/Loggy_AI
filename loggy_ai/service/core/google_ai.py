@@ -13,6 +13,7 @@ import json
 import re
 from typing import Any
 from google import genai
+from service.core.base import GenAIAnalyzer
 from service.core.models import (
     LogAnalysisReport,
     LogAnalysisResponse,
@@ -99,7 +100,7 @@ _PROMPT_DENY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
-class GeminiLogAnalyzer:
+class GeminiLogAnalyzer(GenAIAnalyzer):
     """
     Sends GCP log batches to Gemini with JSON schema-constrained output.
     Uses Application Default Credentials via genai.Client().
@@ -257,7 +258,7 @@ class GeminiLogAnalyzer:
                 max_log_entries=self.max_log_entries,
             )
 
-        minified_logs = self.minified_log(logs)
+        minified_logs = self._minified_log(logs)
         if len(minified_logs) > self.max_payload_bytes:
             raise LogPayloadLimitError(
                 "Redacted log payload exceeds the maximum byte size allowed for analysis.",
@@ -311,7 +312,7 @@ class GeminiLogAnalyzer:
             contents=[genai.types.Part.from_text(text=prompt)],
         ).parsed
 
-    def minified_log(self, logs: list):
+    def _minified_log(self, logs: list):
         """
         Minify the log entries to reduce the prompt window size.
         """
