@@ -18,15 +18,14 @@ class LogAnalysisResponse(BaseModel):
     service_name: str | None = Field(
         description="If present in log, the name of the service that this incident is related to"
     )
-    severity: str = Field(
+    business_impact: str = Field(
         description=(
             "1 sentence describing how severe this incident's impact is from a business perspective. "
-            "Use severity exactly one of: LOW, MEDIUM, HIGH, CRITICAL. "
+            "Use exactly one of: LOW, MEDIUM, HIGH, CRITICAL. "
             "Base this on business impact (revenue, availability, data integrity, compliance), "
             "not log level alone."
         )
     )
-    repetitive_issue: bool = Field(description="if this issue has arise multiple time")
     root_cause: str = Field(
         description="Describe if this is a user error or DevOps error or root code error"
     )
@@ -56,3 +55,15 @@ class ValidationResult(BaseModel):
     is_safe: bool = Field(description="Whether the instruction is safe to use")
     reason: str = Field(description="Reasoning for the safety decision")
     refined_instruction: str = Field(description="The cleaned instruction if safe")
+
+
+class RepetitionCheckResult(BaseModel):
+    """Result of comparing a new incident against recent Firestore reports."""
+
+    is_repetitive: bool = Field(
+        description="Whether the new incident matches an existing report"
+    )
+    matching_report_id: str | None = Field(
+        description="Firestore document ID of the matching report, if is_repetitive is true"
+    )
+    reason: str = Field(description="Brief explanation of the repetition decision")

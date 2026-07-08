@@ -13,7 +13,12 @@ import json
 import re
 from typing import Any
 from google import genai
-from app.core.models import LogAnalysisReport, ValidationResult
+from app.core.models import (
+    LogAnalysisReport,
+    LogAnalysisResponse,
+    RepetitionCheckResult,
+    ValidationResult,
+)
 from app.helper.log_redactor import LogRedactor
 from app.helper.error import LogPayloadLimitError, PromptValidationError
 
@@ -119,17 +124,16 @@ class GeminiLogAnalyzer:
         # pylint: disable=line-too-long
         self.system_instruction = """
         You are a staff Site Reliability Engineer (SRE) and Cloud DevOps expert specialized in Google Cloud platform (GCP). You are analyzing raw GCP logs.
-        Your task is to identify underlying issues, deduplicate repetitive noise and provide actionable remediation steps. You will be provided with array of dictionaries, where each represent a single log entry.
+        Your task is to identify underlying issues, deduplicate repetitive noise within the input batch and provide actionable remediation steps. You will be provided with array of dictionaries, where each represent a single log entry.
         
         Rules:
         1. Analyze each log entry. Treat repetitive logs stemming from the same underlying issue as a single consolidated incident
-        2. For any repetitive incidents, trigger a high priority warning emphasizing the recurring nature
-        3. Identify and extract the GCP resources affected
-        4. If possible, identify the software, and which line of user written code that trigger the error.
-        5. No personally identifiable information, password, API keys or sensitive financials information should be included in output
-        6. Analyze severity about each incident. The analysis should based on the business impact, not software impact. 
-        7. If logs do not contain enough context to identify a root cause, state that explicitly in root_cause and ai_suggestion. Do not invent resources, code paths, or timelines not present in the input.
-        8. If the log contains a service name under resource.labels, include it in the service_name field. Otherwise, leave it as None.
+        2. Identify and extract the GCP resources affected
+        3. If possible, identify the software, and which line of user written code that trigger the error.
+        4. No personally identifiable information, password, API keys or sensitive financials information should be included in output
+        5. Analyze business_impact for each incident. The analysis should be based on business impact, not software impact. Use exactly one of: LOW, MEDIUM, HIGH, CRITICAL.
+        6. If logs do not contain enough context to identify a root cause, state that explicitly in root_cause and ai_suggestion. Do not invent resources, code paths, or timelines not present in the input.
+        7. If the log contains a service name under resource.labels, include it in the service_name field. Otherwise, leave it as None.
         """
 
     def analyze_logs(
@@ -177,6 +181,68 @@ class GeminiLogAnalyzer:
             contents=[
                 genai.types.Part.from_bytes(
                     data=minified_logs, mime_type="application/json"
+                )
+            ],
+        )
+        return response.parsed
+
+    _CANDIDATE_FIELDS = (
+        "id",
+        "operational_summary",
+        "root_cause",
+        "service_name",
+        "business_impact",
+        "severity",
+        "first_seen_timestamp",
+        "last_seen_timestamp",
+        "incident_count",
+    )
+
+    def check_repetition(
+        self, incident: LogAnalysisResponse, candidates: list[dict]
+    ) -> RepetitionCheckResult:
+        """
+        Compare a new incident against recent Firestore reports to detect repetition.
+
+        Args:
+            incident: Newly analyzed incident.
+            candidates: Recent report documents from Firestore.
+
+        Returns:
+            Parsed RepetitionCheckResult from the model response.
+        """
+        slim_candidates = [
+            {key: candidate[key] for key in self._CANDIDATE_FIELDS if key in candidate}
+            for candidate in candidates
+        ]
+        payload = {
+            "new_incident": incident.model_dump(),
+            "candidates": slim_candidates,
+        }
+
+        system_instruction = """
+        You are a Site Reliability Engineer comparing a newly detected incident against recent incident reports stored in Firestore.
+        Determine whether the new incident represents the same underlying issue as any candidate report.
+        Consider operational_summary, root_cause, service_name, and business_impact together — not just surface-level text similarity.
+        If the new incident matches a candidate, set is_repetitive to true and return that candidate's id in matching_report_id.
+        If no candidate is the same underlying issue, set is_repetitive to false and matching_report_id to null.
+        Return exactly one best match when multiple candidates are similar.
+        """
+
+        config = genai.types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_schema=RepetitionCheckResult,
+            response_mime_type="application/json",
+            temperature=0,
+        )
+
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            config=config,
+            contents=[
+                genai.types.Part.from_bytes(
+                    data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+                    mime_type="application/json",
                 )
             ],
         )
