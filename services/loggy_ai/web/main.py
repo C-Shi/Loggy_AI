@@ -98,7 +98,7 @@ def trigger(payload: MessagePublishedData):
 
     try:
         response = logAI.analyze([log_entry])
-        logAI.save_report(response)
+        logAI.save_report(response, source_log=log_entry)
         return {"status": "ok"}
     except (PromptValidationError, LogPayloadLimitError) as e:
         raise HTTPException(400, detail=e.message)

@@ -1,13 +1,18 @@
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from google.auth import default
-from google.cloud import firestore, logging
+from google.cloud import firestore, logging as cloud_logging
 
 from app.core.base import LogIngestor
 from app.core.google_ai import GeminiLogAnalyzer
-from app.core.models import LogAnalysisReport
+from app.core.models import LogAnalysisReport, LogAnalysisResponse
+
+logger = logging.getLogger(__name__)
+
+_UNSET = object()
 
 _PERIOD_PATTERN = re.compile(
     r"^\s*(\d+)\s*"
@@ -76,7 +81,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         if project:
             self.project = project
 
-        self.client = logging.Client(project=self.project)
+        self.client = cloud_logging.Client(project=self.project)
         self.firestore_client = firestore.Client(
             project=self.project, database=self.REPORT_DATABASE
         )
@@ -108,38 +113,114 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         data["id"] = doc.id
         return data
 
-    def fetch_report(self, period: str) -> List[Dict[str, Any]]:
+    def fetch_report(
+        self,
+        period: str,
+        severity: Any = _UNSET,
+        service_name: Any = _UNSET,
+    ) -> List[Dict[str, Any]]:
         """
         Fetch AI analysis reports from Firestore for the given lookback period.
 
         Args:
             period: Lookback window (e.g. "5min", "1h", "2h", "1d", "1 day").
+            severity: Optional GCP log severity level filter (e.g. "ERROR").
+            service_name: Optional service name filter. Pass ``None`` to match
+                reports with no service name.
 
         Returns:
             List of report documents as dictionaries, newest first.
             Each document is expected to include a UTC ``created_at`` timestamp.
         """
         start_time = datetime.now(timezone.utc) - self._parse_period(period)
-        query = (
-            self.firestore_client.collection(self.REPORT_COLLECTION)
-            .where(filter=firestore.FieldFilter("created_at", ">=", start_time))
-            .order_by("created_at", direction=firestore.Query.DESCENDING)
-        )
+        query = self.firestore_client.collection(self.REPORT_COLLECTION)
+
+        if service_name is not _UNSET:
+            query = query.where(
+                filter=firestore.FieldFilter("service_name", "==", service_name)
+            )
+
+        if severity is not _UNSET:
+            query = query.where(
+                filter=firestore.FieldFilter("severity", "==", severity)
+            )
+
+        query = query.where(
+            filter=firestore.FieldFilter("created_at", ">=", start_time)
+        ).order_by("created_at", direction=firestore.Query.DESCENDING)
         return [self._report_doc_to_dict(doc) for doc in query.stream()]
 
-    def save_report(self, report: LogAnalysisReport) -> None:
+    def _create_report_record(
+        self, record: Dict[str, Any], created_at: datetime
+    ) -> None:
+        record["incident_count"] = 1
+        record["created_at"] = created_at
+        self.firestore_client.collection(self.REPORT_COLLECTION).add(record)
+
+    def _update_existing_report(
+        self, doc_id: str, incident: LogAnalysisResponse, insert_id: str | None
+    ) -> None:
+        update_fields = {
+            "incident_count": firestore.Increment(1),
+            "last_seen_timestamp": incident.last_seen_timestamp,
+        }
+        if insert_id:
+            update_fields["last_insert_id"] = insert_id
+        self.firestore_client.collection(self.REPORT_COLLECTION).document(
+            doc_id
+        ).update(update_fields)
+
+    def _candidate_ids(self, candidates: List[Dict[str, Any]]) -> set[str]:
+        return {candidate["id"] for candidate in candidates if candidate.get("id")}
+
+    def save_report(
+        self, report: LogAnalysisReport, source_log: dict | None = None
+    ) -> None:
         """
         Persist each incident in an analysis report to Firestore.
 
+        Checks recent reports for repetition before creating a new document.
+
         Args:
             report: Structured analysis output from the AI analyzer.
+            source_log: Optional source GCP log entry used to inject severity.
         """
+        if not report.incidents:
+            return
+
         created_at = datetime.now(timezone.utc)
+        gcp_severity = ((source_log or {}).get("severity") or "").upper()
+        insert_id = (source_log or {}).get("insertId")
+
         for incident in report.incidents:
             record = incident.model_dump()
-            record["incident_count"] = 1
-            record["created_at"] = created_at
-            self.firestore_client.collection(self.REPORT_COLLECTION).add(record)
+            record["severity"] = gcp_severity
+            if insert_id:
+                record["last_insert_id"] = insert_id
+
+            if not gcp_severity:
+                logger.warning(
+                    "Missing GCP severity on source log; skipping dedup for incident"
+                )
+                self._create_report_record(record, created_at)
+                continue
+
+            candidates = self.fetch_report(
+                "2h", severity=gcp_severity, service_name=incident.service_name
+            )
+
+            if candidates:
+                result = self.analyzer.check_repetition(incident, candidates)
+                matching_id = result.matching_report_id
+                if (
+                    result.is_repetitive
+                    and matching_id
+                    and matching_id in self._candidate_ids(candidates)
+                ):
+                    self._update_existing_report(matching_id, incident, insert_id)
+                    continue
+
+            self._create_report_record(record, created_at)
 
     def fetch_logs(
         self,

@@ -145,4 +145,24 @@ resource "google_project_iam_member" "loggy_ai_report_firestore" {
   }
 }
 
+resource "google_firestore_index" "reports_dedup" {
+  project    = var.project_id
+  database   = google_firestore_database.loggy_ai_report.name
+  collection = "reports"
+
+  fields {
+    field_path = "service_name"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "severity"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "created_at"
+    order      = "DESCENDING"
+  }
+}
 
