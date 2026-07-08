@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Optional
 from google.auth import default
 from google.cloud import firestore, logging as cloud_logging
 
-from app.core.base import LogIngestor
-from app.core.google_ai import GeminiLogAnalyzer
-from app.core.models import LogAnalysisReport, LogAnalysisResponse
+from service.core.base import LogIngestor
+from service.core.google_ai import GeminiLogAnalyzer
+from service.core.models import LogAnalysisReport, LogAnalysisResponse
 
 logger = logging.getLogger(__name__)
 

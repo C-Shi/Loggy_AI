@@ -49,7 +49,7 @@ The current iteration establishes a secure, containerized, and automated end-to-
    To provision or sync state structures locally using GCS as the unified remote state storage backend
 
    ```sh
-   cd infra
+   cd terraform
    terraform init -backend-config="bucket=<Your Bucket>"
    terraform apply -var="project_id=<Your Project ID>"
 
@@ -69,7 +69,7 @@ The current iteration establishes a secure, containerized, and automated end-to-
 
    ```
    gcloud auth configure-docker us-west1-docker.pkg.dev
-   cd services/loggy_ai
+   cd loggy_ai
    docker build --platform="linux/amd64" -t loggy-ai:latest .
    docker tag loggy-ai:latest us-west1-docker.pkg.dev/devops-cert-440119/loggy-ai-image/loggy-ai:latest
    docker push us-west1-docker.pkg.dev/devops-cert-440119/loggy-ai-image/loggy-ai:latest

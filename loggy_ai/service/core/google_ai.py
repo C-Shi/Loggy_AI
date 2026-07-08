@@ -13,14 +13,14 @@ import json
 import re
 from typing import Any
 from google import genai
-from app.core.models import (
+from service.core.models import (
     LogAnalysisReport,
     LogAnalysisResponse,
     RepetitionCheckResult,
     ValidationResult,
 )
-from app.helper.log_redactor import LogRedactor
-from app.helper.error import LogPayloadLimitError, PromptValidationError
+from service.helper.log_redactor import LogRedactor
+from service.helper.error import LogPayloadLimitError, PromptValidationError
 
 # Defaults sized for SMB monitoring: a focused daily ERROR/WARNING window or incident
 # burst without sending an entire noisy day of logs to the model (~100-130K input tokens).

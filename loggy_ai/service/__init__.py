@@ -1,5 +1,5 @@
-from app.core.gcp_adapter import GoogleCloudLoggingAdapter
-from app.core.base import LogIngestor
+from service.core.gcp_adapter import GoogleCloudLoggingAdapter
+from service.core.base import LogIngestor
 
 
 class LoggyAI:

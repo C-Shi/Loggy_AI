@@ -33,7 +33,7 @@ jobs:
 
       - name: Terraform Plan
         run: |
-          cd infra
+          cd terraform
           terraform init -backend-config="bucket=${{ vars.BUCKET_NAME }}"
           terraform plan -var="project_id=${{ vars.GOOGLE_PROJECT }}"
 
@@ -59,6 +59,6 @@ jobs:
 
       - name: Terraform Apply
         run: |
-          cd infra
+          cd terraform
           terraform init -backend-config="bucket=${{ vars.BUCKET_NAME }}"
           terraform apply -var="project_id=${{ vars.GOOGLE_PROJECT }}" -auto-approve
