@@ -65,15 +65,34 @@ class TestRun:
 class TestTrigger:
     def test_success(self, client, patch_loggy_ai_create):
         _, adapter = patch_loggy_ai_create
-        log_entry = {"severity": "ERROR", "textPayload": "boom"}
+        log_entry = {"severity": "ERROR", "textPayload": "boom", "insertId": "ins-1"}
         adapter.analyze.return_value = LogAnalysisReport(incidents=[])
 
         response = client.post("/trigger", json=make_pubsub_payload(log_entry))
 
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+        adapter.has_processed.assert_called_once_with(log_entry)
         adapter.analyze.assert_called_once_with([log_entry])
         adapter.save_report.assert_called_once()
+        adapter.save_processed_event.assert_called_once_with(log_entry, "COMPLETED")
+
+    def test_skips_already_processed_log(self, client, patch_loggy_ai_create):
+        _, adapter = patch_loggy_ai_create
+        log_entry = {"severity": "ERROR", "textPayload": "boom", "insertId": "ins-1"}
+        adapter.has_processed.return_value = True
+
+        response = client.post("/trigger", json=make_pubsub_payload(log_entry))
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "message": "Log has already been processed",
+        }
+        adapter.has_processed.assert_called_once_with(log_entry)
+        adapter.analyze.assert_not_called()
+        adapter.save_report.assert_not_called()
+        adapter.save_processed_event.assert_not_called()
 
     @pytest.mark.parametrize(
         "error_cls,message",
@@ -87,9 +106,11 @@ class TestTrigger:
     ):
         _, adapter = patch_loggy_ai_create
         adapter.analyze.side_effect = error_cls(message)
-        log_entry = {"severity": "ERROR", "textPayload": "boom"}
+        log_entry = {"severity": "ERROR", "textPayload": "boom", "insertId": "ins-1"}
 
         response = client.post("/trigger", json=make_pubsub_payload(log_entry))
 
         assert response.status_code == 400
         assert response.json()["detail"] == message
+        adapter.save_processed_event.assert_called_once_with(log_entry, "FAILED")
+        adapter.has_processed.assert_called_once_with(log_entry)

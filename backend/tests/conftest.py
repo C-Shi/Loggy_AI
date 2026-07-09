@@ -18,6 +18,8 @@ class FakeLogIngestor:
             return_value=LogAnalysisReport(incidents=[])
         )
         self.save_report = MagicMock()
+        self.has_processed = MagicMock(return_value=False)
+        self.save_processed_event = MagicMock()
 
 
 @pytest.fixture

@@ -146,3 +146,56 @@ class TestSaveReport:
 
         adapter._create_report_record.assert_called_once()
         adapter._update_existing_report.assert_not_called()
+
+
+class TestProcessedEvents:
+    def test_has_processed_true_when_doc_exists(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        doc = MagicMock()
+        doc.exists = True
+        adapter.firestore_client.collection.return_value.document.return_value.get.return_value = (
+            doc
+        )
+
+        assert adapter.has_processed({"insertId": "ins-1"}) is True
+        adapter.firestore_client.collection.assert_called_with("processed_events")
+        adapter.firestore_client.collection.return_value.document.assert_called_with(
+            "ins-1"
+        )
+
+    def test_has_processed_false_when_doc_missing(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        doc = MagicMock()
+        doc.exists = False
+        adapter.firestore_client.collection.return_value.document.return_value.get.return_value = (
+            doc
+        )
+
+        assert adapter.has_processed({"insertId": "ins-1"}) is False
+
+    def test_has_processed_requires_insert_id(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        with pytest.raises(ValueError, match="Insert ID is required"):
+            adapter.has_processed({})
+
+    def test_save_processed_event_writes_status(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        doc_ref = adapter.firestore_client.collection.return_value.document.return_value
+
+        with patch("service.core.gcp_adapter.datetime") as mock_datetime:
+            now = datetime(2026, 1, 1, 12, 0, 0)
+            mock_datetime.now.return_value = now
+            adapter.save_processed_event({"insertId": "ins-1"}, "COMPLETED")
+
+        adapter.firestore_client.collection.assert_called_with("processed_events")
+        adapter.firestore_client.collection.return_value.document.assert_called_with(
+            "ins-1"
+        )
+        doc_ref.set.assert_called_once_with(
+            {"status": "COMPLETED", "processed_timestamp": now}
+        )
+
+    def test_save_processed_event_requires_insert_id(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        with pytest.raises(ValueError, match="Insert ID is required"):
+            adapter.save_processed_event({}, "COMPLETED")
