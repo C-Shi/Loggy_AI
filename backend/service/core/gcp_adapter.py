@@ -54,6 +54,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
 
     REPORT_DATABASE = "loggy-ai-report"
     REPORT_COLLECTION = "reports"
+    PROCESSED_EVENTS_COLLECTION = "processed_events"
 
     SEVERITY_LEVEL = [
         "DEBUG",
@@ -309,3 +310,22 @@ class GoogleCloudLoggingAdapter(LogIngestor):
     def analyze(self, logs: List[Dict[str, Any]]) -> LogAnalysisReport:
         """Run AI analysis on a batch of Cloud Logging entries."""
         return self.analyzer.analyze_logs(logs)
+
+    def has_processed(self, log: Dict[str, Any]) -> bool:
+        """Check if the given log has been processed before."""
+        insert_id = log.get("insertId")
+        if not insert_id:
+            raise ValueError("Insert ID is required to check if log has been processed")
+
+        return self.firestore_client.collection(self.PROCESSED_EVENTS_COLLECTION).document(insert_id).get().exists
+
+    def save_processed_event(self, log: Dict[str, Any], status: str) -> None:
+        """Save the given log as a processed event."""
+        insert_id = log.get("insertId")
+        if not insert_id:
+            raise ValueError("Insert ID is required to save a processed event")
+
+        self.firestore_client.collection(self.PROCESSED_EVENTS_COLLECTION).document(insert_id).set({
+            "status": status,
+            "processed_timestamp": datetime.now(timezone.utc)
+        })

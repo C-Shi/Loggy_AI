@@ -30,6 +30,14 @@ class LogIngestor(ABC):
     def analyze(self, logs: List[Dict[str, Any]]) -> Dict[str, Any]:
         pass
 
+    @abstractmethod
+    def has_processed(self, log: Dict[str, Any]) -> bool:
+        pass
+
+    @abstractmethod
+    def save_processed_event(self, log: Dict[str, Any], status: str) -> None:
+        pass
+
 class GenAIAnalyzer(ABC):
     @abstractmethod
     def analyze_logs(self, logs: List[Any], instruction: Optional[str] = None) -> LogAnalysisReport:
