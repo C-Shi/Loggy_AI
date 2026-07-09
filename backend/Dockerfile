@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /code
 
+ENV PYTHONPATH=/code:/code/api
+
 COPY ./requirements.txt /code/requirements.txt
 
 RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
@@ -20,4 +22,4 @@ RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 COPY ./service /code/service
 COPY ./api /code/api
 
-CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

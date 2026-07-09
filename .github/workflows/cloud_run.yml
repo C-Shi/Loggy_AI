@@ -2,11 +2,15 @@ name: Cloud Run
 
 on:
   workflow_run:
-    workflows: ["Terraform", "Backend Tests"]
+    workflows: ["Terraform"]
     types:
       - completed
     branches:
       - main
+
+concurrency:
+  group: cloud-run-deploy-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
