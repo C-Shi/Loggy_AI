@@ -11,21 +11,24 @@ on:
 permissions:
   contents: read
   id-token: write
+  actions: read
 
 jobs:
   verify-prerequisites:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
+      - uses: actions/checkout@v4
       - name: Verify Terraform and Backend Tests both passed
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
         run: |
           check_workflow() {
             local name="$1"
             local conclusion
-            conclusion=$(gh run list --workflow="$name" --commit="$SHA" \
+            conclusion=$(gh run list --repo "$REPO" --workflow="$name" --commit="$SHA" \
               --branch=main --limit=1 --json conclusion --jq '.[0].conclusion')
             if [ "$conclusion" != "success" ]; then
               echo "$name did not succeed for $SHA (got: $conclusion)"
@@ -40,6 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Auth Google Cloud
         uses: google-github-actions/auth@v3
@@ -55,14 +60,14 @@ jobs:
         run: |
           gcloud auth configure-docker us-west1-docker.pkg.dev
           cd backend
-          COMMIT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          COMMIT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
           docker build --platform="linux/amd64" -t loggy-ai:$COMMIT_SHA .
           docker tag loggy-ai:$COMMIT_SHA us-west1-docker.pkg.dev/${{ vars.GOOGLE_PROJECT }}/loggy-ai-image/loggy-ai:$COMMIT_SHA
           docker push us-west1-docker.pkg.dev/${{ vars.GOOGLE_PROJECT }}/loggy-ai-image/loggy-ai:$COMMIT_SHA
 
       - name: Deploy to Cloud Run
         run: |
-          COMMIT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          COMMIT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
           gcloud run deploy loggy-ai-service \
             --image=us-west1-docker.pkg.dev/${{ vars.GOOGLE_PROJECT }}/loggy-ai-image/loggy-ai:$COMMIT_SHA \
             --region=us-west1 \
