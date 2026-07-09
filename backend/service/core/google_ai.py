@@ -13,14 +13,15 @@ import json
 import re
 from typing import Any
 from google import genai
-from app.core.models import (
+from service.core.base import GenAIAnalyzer
+from service.core.models import (
     LogAnalysisReport,
     LogAnalysisResponse,
     RepetitionCheckResult,
     ValidationResult,
 )
-from app.helper.log_redactor import LogRedactor
-from app.helper.error import LogPayloadLimitError, PromptValidationError
+from service.helper.log_redactor import LogRedactor
+from service.helper.error import LogPayloadLimitError, PromptValidationError
 
 # Defaults sized for SMB monitoring: a focused daily ERROR/WARNING window or incident
 # burst without sending an entire noisy day of logs to the model (~100-130K input tokens).
@@ -99,7 +100,7 @@ _PROMPT_DENY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
-class GeminiLogAnalyzer:
+class GeminiLogAnalyzer(GenAIAnalyzer):
     """
     Sends GCP log batches to Gemini with JSON schema-constrained output.
     Uses Application Default Credentials via genai.Client().
@@ -257,7 +258,7 @@ class GeminiLogAnalyzer:
                 max_log_entries=self.max_log_entries,
             )
 
-        minified_logs = self.minified_log(logs)
+        minified_logs = self._minified_log(logs)
         if len(minified_logs) > self.max_payload_bytes:
             raise LogPayloadLimitError(
                 "Redacted log payload exceeds the maximum byte size allowed for analysis.",
@@ -311,7 +312,7 @@ class GeminiLogAnalyzer:
             contents=[genai.types.Part.from_text(text=prompt)],
         ).parsed
 
-    def minified_log(self, logs: list):
+    def _minified_log(self, logs: list):
         """
         Minify the log entries to reduce the prompt window size.
         """

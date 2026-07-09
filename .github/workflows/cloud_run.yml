@@ -2,7 +2,7 @@ name: Cloud Run
 
 on:
   workflow_run:
-    workflows: ["Terraform"]
+    workflows: ["Terraform", "Backend Tests"]
     types:
       - completed
     branches:
@@ -13,9 +13,31 @@ permissions:
   id-token: write
 
 jobs:
-  build_and_deploy:
+  verify-prerequisites:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Verify Terraform and Backend Tests both passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          check_workflow() {
+            local name="$1"
+            local conclusion
+            conclusion=$(gh run list --workflow="$name" --commit="$SHA" \
+              --branch=main --limit=1 --json conclusion --jq '.[0].conclusion')
+            if [ "$conclusion" != "success" ]; then
+              echo "$name did not succeed for $SHA (got: $conclusion)"
+              exit 1
+            fi
+          }
+          check_workflow "Terraform"
+          check_workflow "Backend Tests"
+
+  build_and_deploy:
+    needs: verify-prerequisites
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -32,7 +54,7 @@ jobs:
       - name: Build Image
         run: |
           gcloud auth configure-docker us-west1-docker.pkg.dev
-          cd services/loggy_ai
+          cd backend
           COMMIT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           docker build --platform="linux/amd64" -t loggy-ai:$COMMIT_SHA .
           docker tag loggy-ai:$COMMIT_SHA us-west1-docker.pkg.dev/${{ vars.GOOGLE_PROJECT }}/loggy-ai-image/loggy-ai:$COMMIT_SHA

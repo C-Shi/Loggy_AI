@@ -8,13 +8,13 @@
             "name": "Python: Detector",
             "type": "python",
             "request": "launch",
-            "program": "${workspaceFolder}/services/loggy_ai/app/main.py",
+            "program": "${workspaceFolder}/backend/api/main.py",
             "console": "integratedTerminal",
             "python": "${workspaceFolder}/venv/bin/python",
             "justMyCode": true,
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/services/loggy_ai"
+                "PYTHONPATH": "${workspaceFolder}/backend"
             }
         },
         {
@@ -27,7 +27,7 @@
                 "main.py"
             ],
             "jinja": true,
-            "cwd": "${workspaceFolder}/services/loggy_ai/web",
+            "cwd": "${workspaceFolder}/backend/api",
             "console": "integratedTerminal"
         }
     ]
