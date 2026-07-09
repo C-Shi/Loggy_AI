@@ -149,7 +149,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         return [self._report_doc_to_dict(doc) for doc in query.stream()]
 
     def _create_report_record(
-        self, record: Dict[str, Any], created_at: datetime
+        self, record: Dict[str, Any], created_at: datetime, log_message: str, signature: str
     ) -> None:
         record["incident_count"] = 1
         record["created_at"] = created_at
@@ -172,7 +172,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         return {candidate["id"] for candidate in candidates if candidate.get("id")}
 
     def save_report(
-        self, report: LogAnalysisReport, source_log: dict | None = None
+        self, report: LogAnalysisResponse, source_log: dict | None = None
     ) -> None:
         """
         Persist each incident in an analysis report to Firestore.
@@ -183,42 +183,37 @@ class GoogleCloudLoggingAdapter(LogIngestor):
             report: Structured analysis output from the AI analyzer.
             source_log: Optional source GCP log entry used to inject severity.
         """
-        if not report.incidents:
-            return
 
         created_at = datetime.now(timezone.utc)
         gcp_severity = ((source_log or {}).get("severity") or "").upper()
         insert_id = (source_log or {}).get("insertId")
 
-        for incident in report.incidents:
-            record = incident.model_dump()
-            record["severity"] = gcp_severity
-            if insert_id:
-                record["last_insert_id"] = insert_id
+        record = report.model_dump()
+        record["severity"] = gcp_severity
+        if insert_id:
+            record["last_insert_id"] = insert_id
 
-            if not gcp_severity:
-                logger.warning(
-                    "Missing GCP severity on source log; skipping dedup for incident"
-                )
-                self._create_report_record(record, created_at)
-                continue
-
+        if not gcp_severity:
+            logger.warning(
+                "Missing GCP severity on source log; skipping dedup for incident"
+            )
+            self._create_report_record(record, created_at)
+        else:
             candidates = self.fetch_report(
-                "2h", severity=gcp_severity, service_name=incident.service_name
+                "2h", severity=gcp_severity, service_name=record["service_name"]
             )
 
             if candidates:
-                result = self.analyzer.check_repetition(incident, candidates)
+                result = self.analyzer.check_repetition(report, candidates)
                 matching_id = result.matching_report_id
                 if (
                     result.is_repetitive
                     and matching_id
                     and matching_id in self._candidate_ids(candidates)
                 ):
-                    self._update_existing_report(matching_id, incident, insert_id)
-                    continue
-
-            self._create_report_record(record, created_at)
+                    self._update_existing_report(matching_id, report, insert_id)
+            else:
+                self._create_report_record(record, created_at)
 
     def fetch_logs(
         self,

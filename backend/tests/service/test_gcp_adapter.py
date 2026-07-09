@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from service.core.gcp_adapter import GoogleCloudLoggingAdapter
-from service.core.models import LogAnalysisReport, RepetitionCheckResult
+from service.core.models import LogAnalysisReport, LogAnalysisResponse, RepetitionCheckResult
 from tests.conftest import sample_incident
 
 
@@ -95,14 +95,13 @@ class TestSaveReport:
 
     def test_empty_incidents_is_noop(self, mock_gcp_adapter_clients):
         adapter, _ = self._make_adapter(mock_gcp_adapter_clients)
-        adapter.save_report(LogAnalysisReport(incidents=[]))
+        adapter.save_report(sample_incident())
         adapter._create_report_record.assert_not_called()
 
     def test_missing_severity_skips_dedup(self, mock_gcp_adapter_clients):
         adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
-        report = LogAnalysisReport(incidents=[sample_incident()])
 
-        adapter.save_report(report, source_log={"insertId": "abc"})
+        adapter.save_report(sample_incident(), source_log={"insertId": "abc"})
 
         adapter.fetch_report.assert_not_called()
         analyzer.check_repetition.assert_not_called()
@@ -111,7 +110,6 @@ class TestSaveReport:
     def test_repetitive_incident_updates_existing(self, mock_gcp_adapter_clients):
         adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
         incident = sample_incident()
-        report = LogAnalysisReport(incidents=[incident])
         adapter.fetch_report.return_value = [{"id": "existing-doc"}]
         analyzer.check_repetition.return_value = RepetitionCheckResult(
             is_repetitive=True,
@@ -120,7 +118,7 @@ class TestSaveReport:
         )
 
         adapter.save_report(
-            report,
+            incident,
             source_log={"severity": "ERROR", "insertId": "log-1"},
         )
 
@@ -131,7 +129,6 @@ class TestSaveReport:
 
     def test_new_incident_creates_record(self, mock_gcp_adapter_clients):
         adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
-        report = LogAnalysisReport(incidents=[sample_incident()])
         adapter.fetch_report.return_value = [{"id": "other-doc"}]
         analyzer.check_repetition.return_value = RepetitionCheckResult(
             is_repetitive=False,
@@ -140,7 +137,7 @@ class TestSaveReport:
         )
 
         adapter.save_report(
-            report,
+            sample_incident(),
             source_log={"severity": "ERROR", "insertId": "log-2"},
         )
 

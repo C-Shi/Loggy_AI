@@ -19,7 +19,7 @@ class LogIngestor(ABC):
         pass
 
     @abstractmethod
-    def save_report(self, report: LogAnalysisReport, source_log: dict | None = None) -> None:
+    def save_report(self, report: LogAnalysisResponse, source_log: dict | None = None) -> None:
         pass
 
     @abstractmethod

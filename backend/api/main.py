@@ -72,7 +72,7 @@ def trigger(payload: MessagePublishedData):
 
     try:
         response = log_analyzer.analyze([log_entry])
-        log_analyzer.save_report(response, source_log=log_entry)
+        log_analyzer.save_report(response.incidents[0], source_log=log_entry)
         log_analyzer.save_processed_event(log_entry, "COMPLETED")
         return {"status": "ok"}
     except (PromptValidationError, LogPayloadLimitError) as e:
