@@ -32,7 +32,7 @@ jobs:
       - name: Build Image
         run: |
           gcloud auth configure-docker us-west1-docker.pkg.dev
-          cd loggy_ai
+          cd backend
           COMMIT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           docker build --platform="linux/amd64" -t loggy-ai:$COMMIT_SHA .
           docker tag loggy-ai:$COMMIT_SHA us-west1-docker.pkg.dev/${{ vars.GOOGLE_PROJECT }}/loggy-ai-image/loggy-ai:$COMMIT_SHA

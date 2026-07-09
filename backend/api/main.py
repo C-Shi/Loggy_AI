@@ -25,7 +25,7 @@ def health():
 @app.post("/run")
 def run(config: ConfigItem):
     """Fetch logs from the configured provider and return AI analysis."""
-    logAI = LoggyAI.create(config.provider)
+    log_analyzer = LoggyAI.create(config.provider)
     if config.start:
         start_time = datetime.strptime(config.start, "%Y-%m-%d %H:%M:%S")
     else:
@@ -36,7 +36,7 @@ def run(config: ConfigItem):
     else:
         end_time = datetime.now()
 
-    logs = logAI.fetch_logs(
+    logs = log_analyzer.fetch_logs(
         limit=config.limit,
         log_name=config.log,
         severity_level=config.severity,
@@ -46,7 +46,7 @@ def run(config: ConfigItem):
     )
 
     try:
-        response = logAI.analyze(logs)
+        response = log_analyzer.analyze(logs)
         return response
     except (PromptValidationError, LogPayloadLimitError) as e:
         raise HTTPException(400, detail=e.message)
@@ -64,11 +64,11 @@ def trigger(payload: MessagePublishedData):
     decoded_log = base64.b64decode(encoded_log).decode("utf-8")
     log_entry = json.loads(decoded_log)
 
-    logAI = LoggyAI.create(provider=ConfigItem().provider)
+    log_analyzer = LoggyAI.create(provider=ConfigItem().provider)
 
     try:
-        response = logAI.analyze([log_entry])
-        logAI.save_report(response, source_log=log_entry)
+        response = log_analyzer.analyze([log_entry])
+        log_analyzer.save_report(response, source_log=log_entry)
         return {"status": "ok"}
     except (PromptValidationError, LogPayloadLimitError) as e:
         raise HTTPException(400, detail=e.message)
