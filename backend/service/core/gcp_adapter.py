@@ -226,8 +226,9 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         """
 
         created_at = datetime.now(timezone.utc)
-        gcp_severity = ((source_log or {}).get("severity") or "").upper()
-        insert_id = (source_log or {}).get("insertId")
+        source_log = source_log or {}
+        gcp_severity = (source_log.get("severity") or "").upper()
+        insert_id = source_log.get("insertId")
         log_message = self.redactor.sanitize_single_log(source_log)["message"]
         resource_labels = source_log.get("resource", {}).get("labels", {})
 
@@ -247,22 +248,24 @@ class GoogleCloudLoggingAdapter(LogIngestor):
                 "Missing GCP severity on source log; skipping dedup for incident"
             )
             self._create_report_record(record, created_at)
-        else:
-            candidates = self.fetch_report(
-                "2h", severity=gcp_severity, service_name=record["service_name"]
-            )
+            return
 
-            if candidates:
-                result = self.analyzer.detect_contextual_repeat(report, candidates)
-                matching_id = result.matching_report_id
-                if (
-                    result.is_repetitive
-                    and matching_id
-                    and matching_id in self._candidate_ids(candidates)
-                ):
-                    self._update_existing_report(matching_id, report, insert_id)
-            else:
-                self._create_report_record(record, created_at)
+        candidates = self.fetch_report(
+            "2h", severity=gcp_severity, service_name=record["service_name"]
+        )
+
+        if candidates:
+            result = self.analyzer.detect_contextual_repeat(report, candidates)
+            matching_id = result.matching_report_id
+            if (
+                result.is_repetitive
+                and matching_id
+                and matching_id in self._candidate_ids(candidates)
+            ):
+                self._update_existing_report(matching_id, report, insert_id)
+                return
+
+        self._create_report_record(record, created_at)
 
     def fetch_logs(
         self,

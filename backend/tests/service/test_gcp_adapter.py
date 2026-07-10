@@ -114,10 +114,12 @@ class TestSaveReport:
         adapter.fetch_report = MagicMock(return_value=[])
         return adapter, analyzer
 
-    def test_empty_incidents_is_noop(self, mock_gcp_adapter_clients):
-        adapter, _ = self._make_adapter(mock_gcp_adapter_clients)
+    def test_missing_source_log_creates_record(self, mock_gcp_adapter_clients):
+        adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
         adapter.save_report(sample_incident())
-        adapter._create_report_record.assert_not_called()
+        adapter.fetch_report.assert_not_called()
+        analyzer.detect_contextual_repeat.assert_not_called()
+        adapter._create_report_record.assert_called_once()
 
     def test_missing_severity_skips_dedup(self, mock_gcp_adapter_clients):
         adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
@@ -125,14 +127,14 @@ class TestSaveReport:
         adapter.save_report(sample_incident(), source_log={"insertId": "abc"})
 
         adapter.fetch_report.assert_not_called()
-        analyzer.check_repetition.assert_not_called()
+        analyzer.detect_contextual_repeat.assert_not_called()
         adapter._create_report_record.assert_called_once()
 
     def test_repetitive_incident_updates_existing(self, mock_gcp_adapter_clients):
         adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
         incident = sample_incident()
         adapter.fetch_report.return_value = [{"id": "existing-doc"}]
-        analyzer.check_repetition.return_value = RepetitionCheckResult(
+        analyzer.detect_contextual_repeat.return_value = RepetitionCheckResult(
             is_repetitive=True,
             matching_report_id="existing-doc",
             reason="same root cause",
@@ -140,7 +142,11 @@ class TestSaveReport:
 
         adapter.save_report(
             incident,
-            source_log={"severity": "ERROR", "insertId": "log-1"},
+            source_log={
+                "severity": "ERROR",
+                "insertId": "log-1",
+                "textPayload": "boom",
+            },
         )
 
         adapter._update_existing_report.assert_called_once_with(
@@ -151,7 +157,7 @@ class TestSaveReport:
     def test_new_incident_creates_record(self, mock_gcp_adapter_clients):
         adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
         adapter.fetch_report.return_value = [{"id": "other-doc"}]
-        analyzer.check_repetition.return_value = RepetitionCheckResult(
+        analyzer.detect_contextual_repeat.return_value = RepetitionCheckResult(
             is_repetitive=False,
             matching_report_id=None,
             reason="different issue",
@@ -159,9 +165,30 @@ class TestSaveReport:
 
         adapter.save_report(
             sample_incident(),
-            source_log={"severity": "ERROR", "insertId": "log-2"},
+            source_log={
+                "severity": "ERROR",
+                "insertId": "log-2",
+                "textPayload": "boom",
+            },
         )
 
+        adapter._create_report_record.assert_called_once()
+        adapter._update_existing_report.assert_not_called()
+
+    def test_no_candidates_creates_record(self, mock_gcp_adapter_clients):
+        adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
+        adapter.fetch_report.return_value = []
+
+        adapter.save_report(
+            sample_incident(),
+            source_log={
+                "severity": "ERROR",
+                "insertId": "log-3",
+                "textPayload": "boom",
+            },
+        )
+
+        analyzer.detect_contextual_repeat.assert_not_called()
         adapter._create_report_record.assert_called_once()
         adapter._update_existing_report.assert_not_called()
 
