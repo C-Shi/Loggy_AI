@@ -42,6 +42,27 @@ class TestReportDocToDict:
         result = GoogleCloudLoggingAdapter._report_doc_to_dict(doc)
         assert result == {"severity": "ERROR", "id": "doc-123"}
 
+    def test_converts_firestore_datetimes_to_isoformat(self):
+        from google.api_core.datetime_helpers import DatetimeWithNanoseconds
+
+        ts = DatetimeWithNanoseconds(2026, 1, 1, 12, 0, 0)
+        doc = MagicMock()
+        doc.id = "doc-123"
+        doc.to_dict.return_value = {
+            "severity": "ERROR",
+            "first_seen_timestamp": ts,
+            "last_seen_timestamp": ts,
+            "created_at": ts,
+        }
+        result = GoogleCloudLoggingAdapter._report_doc_to_dict(doc)
+        assert result["id"] == "doc-123"
+        assert result["first_seen_timestamp"] == ts.isoformat()
+        assert result["last_seen_timestamp"] == ts.isoformat()
+        assert result["created_at"] == ts.isoformat()
+        import json
+
+        json.dumps(result)  # must be JSON-serializable
+
 
 class TestFetchLogs:
     def test_builds_filter_with_all_parameters(self, mock_gcp_adapter_clients):

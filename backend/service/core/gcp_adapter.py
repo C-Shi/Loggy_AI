@@ -108,9 +108,23 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         return timedelta(**{unit: amount})
 
     @staticmethod
+    def _json_safe_value(value: Any) -> Any:
+        """Convert Firestore/datetime values into JSON-serializable forms."""
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {
+                key: GoogleCloudLoggingAdapter._json_safe_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [GoogleCloudLoggingAdapter._json_safe_value(item) for item in value]
+        return value
+
+    @staticmethod
     def _report_doc_to_dict(doc: firestore.DocumentSnapshot) -> Dict[str, Any]:
         """Convert a Firestore document snapshot to a plain dictionary with its ID."""
-        data = doc.to_dict() or {}
+        data = GoogleCloudLoggingAdapter._json_safe_value(doc.to_dict() or {})
         data["id"] = doc.id
         return data
 
@@ -119,6 +133,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         period: str,
         severity: Any = _UNSET,
         service_name: Any = _UNSET,
+        signature: Any = _UNSET,
     ) -> List[Dict[str, Any]]:
         """
         Fetch AI analysis reports from Firestore for the given lookback period.
@@ -144,6 +159,11 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         if severity is not _UNSET:
             query = query.where(
                 filter=firestore.FieldFilter("severity", "==", severity)
+            )
+
+        if signature is not _UNSET:
+            query = query.where(
+                filter=firestore.FieldFilter("signature", "==", signature)
             )
 
         query = query.where(
@@ -174,6 +194,24 @@ class GoogleCloudLoggingAdapter(LogIngestor):
     def _candidate_ids(self, candidates: List[Dict[str, Any]]) -> set[str]:
         return {candidate["id"] for candidate in candidates if candidate.get("id")}
 
+    def detect_signature_repeat(self, source_log: Dict[str, Any], period: str = "2h") -> bool:
+        log_message = self.redactor.sanitize_single_log(source_log)["message"]
+        gcp_severity = ((source_log or {}).get("severity") or "").upper()
+        resource_labels = source_log.get("resource", {}).get("labels", {})
+
+        string_to_hash = f"{resource_labels}|{gcp_severity}|{log_message}"
+        signature = hashlib.md5(string_to_hash.encode()).hexdigest()
+
+        signature_repeats = self.fetch_report(period=period, signature=signature)
+        if len(signature_repeats) > 0:
+            self.firestore_client.collection(self.REPORT_COLLECTION).document(signature_repeats[0]["id"]).update({
+                "incident_count": firestore.Increment(1),
+                "last_seen_timestamp": datetime.now(timezone.utc)
+            })
+            return True
+        return False
+
+
     def save_report(
         self, report: LogAnalysisResponse, source_log: dict | None = None
     ) -> None:
@@ -191,11 +229,12 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         gcp_severity = ((source_log or {}).get("severity") or "").upper()
         insert_id = (source_log or {}).get("insertId")
         log_message = self.redactor.sanitize_single_log(source_log)["message"]
+        resource_labels = source_log.get("resource", {}).get("labels", {})
 
         record = report.model_dump()
         record["severity"] = gcp_severity
 
-        string_to_hash = f"{record['service_name']}|{gcp_severity}|{log_message}"
+        string_to_hash = f"{resource_labels}|{gcp_severity}|{log_message}"
         signature = hashlib.md5(string_to_hash.encode()).hexdigest()
         record["signature"] = signature
         record["log_message"] = log_message
@@ -214,7 +253,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
             )
 
             if candidates:
-                result = self.analyzer.check_repetition(report, candidates)
+                result = self.analyzer.detect_contextual_repeat(report, candidates)
                 matching_id = result.matching_report_id
                 if (
                     result.is_repetitive

@@ -11,6 +11,7 @@ separate guardrail model before being merged into the system prompt.
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 from google import genai
 from service.core.base import GenAIAnalyzer
@@ -134,7 +135,7 @@ class GeminiLogAnalyzer(GenAIAnalyzer):
         4. No personally identifiable information, password, API keys or sensitive financials information should be included in output
         5. Analyze business_impact for each incident. The analysis should be based on business impact, not software impact. Use exactly one of: LOW, MEDIUM, HIGH, CRITICAL.
         6. If logs do not contain enough context to identify a root cause, state that explicitly in root_cause and ai_suggestion. Do not invent resources, code paths, or timelines not present in the input.
-        7. If the log contains a service name under resource.labels, include it in the service_name field. Otherwise, leave it as None.
+        7. Find the proper definition of service name in raw log, this should ideally be the same as the service name in resource.labels, include it in the service_name field. Otherwise, find the best definition from the log.
         """
 
     def analyze_logs(
@@ -199,11 +200,20 @@ class GeminiLogAnalyzer(GenAIAnalyzer):
         "incident_count",
     )
 
-    def check_repetition(
+    @staticmethod
+    def _json_default(value: Any) -> Any:
+        """Serialize datetime-like values (incl. Firestore DatetimeWithNanoseconds)."""
+        if isinstance(value, datetime):
+            return value.isoformat()
+        raise TypeError(
+            f"Object of type {type(value).__name__} is not JSON serializable"
+        )
+
+    def detect_contextual_repeat(
         self, incident: LogAnalysisResponse, candidates: list[dict]
     ) -> RepetitionCheckResult:
         """
-        Compare a new incident against recent Firestore reports to detect repetition.
+        Compare a new incident against recent Firestore reports to detect repetition using contextual similarity via Gen AI.
 
         Args:
             incident: Newly analyzed incident.
@@ -242,7 +252,9 @@ class GeminiLogAnalyzer(GenAIAnalyzer):
             config=config,
             contents=[
                 genai.types.Part.from_bytes(
-                    data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+                    data=json.dumps(
+                        payload, separators=(",", ":"), default=self._json_default
+                    ).encode("utf-8"),
                     mime_type="application/json",
                 )
             ],

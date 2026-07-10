@@ -145,6 +145,7 @@ resource "google_project_iam_member" "loggy_ai_report_firestore" {
   }
 }
 
+# Covers: service_name == + severity == + created_at >= ORDER BY created_at DESC
 resource "google_firestore_index" "reports_dedup" {
   project    = var.project_id
   database   = google_firestore_database.loggy_ai_report.name
@@ -157,6 +158,23 @@ resource "google_firestore_index" "reports_dedup" {
 
   fields {
     field_path = "severity"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "created_at"
+    order      = "DESCENDING"
+  }
+}
+
+# Covers: signature == + created_at >= ORDER BY created_at DESC
+resource "google_firestore_index" "reports_by_signature" {
+  project    = var.project_id
+  database   = google_firestore_database.loggy_ai_report.name
+  collection = "reports"
+
+  fields {
+    field_path = "signature"
     order      = "ASCENDING"
   }
 

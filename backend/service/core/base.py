@@ -38,13 +38,17 @@ class LogIngestor(ABC):
     def save_processed_event(self, log: Dict[str, Any], status: str) -> None:
         pass
 
+    @abstractmethod
+    def detect_signature_repeat(self, source_log: Dict[str, Any], period: str = "2h") -> bool:
+        pass
+
 class GenAIAnalyzer(ABC):
     @abstractmethod
     def analyze_logs(self, logs: List[Any], instruction: Optional[str] = None) -> LogAnalysisReport:
         pass
 
     @abstractmethod
-    def check_repetition(self, incident: LogAnalysisResponse, candidates: List[Dict[str, Any]]) -> RepetitionCheckResult:
+    def detect_contextual_repeat(self, incident: LogAnalysisResponse, candidates: List[Dict[str, Any]]) -> RepetitionCheckResult:
         pass
 
     @abstractmethod
