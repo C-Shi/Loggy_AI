@@ -1,5 +1,6 @@
 import logging
 import re
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -9,6 +10,7 @@ from google.cloud import firestore, logging as cloud_logging
 from service.core.base import LogIngestor
 from service.core.models import LogAnalysisReport, LogAnalysisResponse
 from service.core.base import GenAIAnalyzer
+import service.helper.log_redactor as log_redactor
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
             project=self.project, database=self.REPORT_DATABASE
         )
         self.analyzer = ai_tool
+        self.redactor = log_redactor.LogRedactor()
 
     @staticmethod
     def _parse_period(period: str) -> timedelta:
@@ -149,7 +152,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         return [self._report_doc_to_dict(doc) for doc in query.stream()]
 
     def _create_report_record(
-        self, record: Dict[str, Any], created_at: datetime, log_message: str, signature: str
+        self, record: Dict[str, Any], created_at: datetime
     ) -> None:
         record["incident_count"] = 1
         record["created_at"] = created_at
@@ -187,9 +190,16 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         created_at = datetime.now(timezone.utc)
         gcp_severity = ((source_log or {}).get("severity") or "").upper()
         insert_id = (source_log or {}).get("insertId")
+        log_message = self.redactor.sanitize_single_log(source_log)["message"]
 
         record = report.model_dump()
         record["severity"] = gcp_severity
+
+        string_to_hash = f"{record['service_name']}|{gcp_severity}|{log_message}"
+        signature = hashlib.md5(string_to_hash.encode()).hexdigest()
+        record["signature"] = signature
+        record["log_message"] = log_message
+
         if insert_id:
             record["last_insert_id"] = insert_id
 
