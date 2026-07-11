@@ -7,9 +7,8 @@ from typing import Any, Dict, List, Optional
 from google.auth import default
 from google.cloud import firestore, logging as cloud_logging
 
-from service.core.base import LogIngestor
+from service.core.base import GenAIAnalyzer, LogIngestor, SignatureClaimResult
 from service.core.models import LogAnalysisReport, LogAnalysisResponse
-from service.core.base import GenAIAnalyzer
 import service.helper.log_redactor as log_redactor
 
 logger = logging.getLogger(__name__)
@@ -57,6 +56,9 @@ class GoogleCloudLoggingAdapter(LogIngestor):
     REPORT_DATABASE = "loggy-ai-report"
     REPORT_COLLECTION = "reports"
     PROCESSED_EVENTS_COLLECTION = "processed_events"
+    SIGNATURES_COLLECTION = "signatures"
+    SIGNATURE_STATUS_PENDING = "pending"
+    SIGNATURE_STATUS_READY = "ready"
 
     SEVERITY_LEVEL = [
         "DEBUG",
@@ -172,11 +174,17 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         return [self._report_doc_to_dict(doc) for doc in query.stream()]
 
     def _create_report_record(
-        self, record: Dict[str, Any], created_at: datetime
-    ) -> None:
-        record["incident_count"] = 1
+        self,
+        record: Dict[str, Any],
+        created_at: datetime,
+        incident_count: int = 1,
+    ) -> str:
+        record["incident_count"] = incident_count
         record["created_at"] = created_at
-        self.firestore_client.collection(self.REPORT_COLLECTION).add(record)
+        _timestamp, doc_ref = self.firestore_client.collection(
+            self.REPORT_COLLECTION
+        ).add(record)
+        return doc_ref.id
 
     def _update_existing_report(
         self, doc_id: str, incident: LogAnalysisResponse, insert_id: str | None
@@ -194,23 +202,155 @@ class GoogleCloudLoggingAdapter(LogIngestor):
     def _candidate_ids(self, candidates: List[Dict[str, Any]]) -> set[str]:
         return {candidate["id"] for candidate in candidates if candidate.get("id")}
 
-    def detect_signature_repeat(self, source_log: Dict[str, Any], period: str = "2h") -> bool:
+    def _compute_signature(self, source_log: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+        """Return (signature_hash, metadata) for a source Cloud Logging entry."""
         log_message = self.redactor.sanitize_single_log(source_log)["message"]
         gcp_severity = ((source_log or {}).get("severity") or "").upper()
         resource_labels = source_log.get("resource", {}).get("labels", {})
-
         string_to_hash = f"{resource_labels}|{gcp_severity}|{log_message}"
         signature = hashlib.md5(string_to_hash.encode()).hexdigest()
+        return signature, {
+            "log_message": log_message,
+            "severity": gcp_severity,
+            "resource_labels": resource_labels,
+        }
 
-        signature_repeats = self.fetch_report(period=period, signature=signature)
-        if len(signature_repeats) > 0:
-            self.firestore_client.collection(self.REPORT_COLLECTION).document(signature_repeats[0]["id"]).update({
-                "incident_count": firestore.Increment(1),
-                "last_seen_timestamp": datetime.now(timezone.utc)
-            })
-            return True
-        return False
+    def claim_or_follow_signature(
+        self, source_log: Dict[str, Any]
+    ) -> SignatureClaimResult:
+        """
+        Atomically claim a signature for Gemini analysis, or follow an existing claim.
 
+        - Missing doc → create pending claim (caller must run Gemini).
+        - Ready doc → bump count (caller increments report, no Gemini).
+        - Pending doc → follower should retry later (HTTP 503).
+        """
+        signature, meta = self._compute_signature(source_log)
+        sig_ref = self.firestore_client.collection(
+            self.SIGNATURES_COLLECTION
+        ).document(signature)
+
+        @firestore.transactional
+        def _claim(transaction: firestore.Transaction) -> SignatureClaimResult:
+            snap = sig_ref.get(transaction=transaction)
+            now = datetime.now(timezone.utc)
+            if not snap.exists:
+                transaction.set(
+                    sig_ref,
+                    {
+                        "status": self.SIGNATURE_STATUS_PENDING,
+                        "count": 1,
+                        "created_at": now,
+                        "updated_at": now,
+                        "log_message": meta["log_message"],
+                        "severity": meta["severity"],
+                    },
+                )
+                return SignatureClaimResult(
+                    outcome="claimed",
+                    signature=signature,
+                    report_id=None,
+                    count=1,
+                )
+
+            data = snap.to_dict() or {}
+            status = data.get("status")
+            report_id = data.get("report_id")
+            count = int(data.get("count") or 1)
+
+            if status == self.SIGNATURE_STATUS_READY and report_id:
+                transaction.update(
+                    sig_ref,
+                    {
+                        "count": firestore.Increment(1),
+                        "updated_at": now,
+                    },
+                )
+                return SignatureClaimResult(
+                    outcome="followed_ready",
+                    signature=signature,
+                    report_id=report_id,
+                    count=count + 1,
+                )
+
+            return SignatureClaimResult(
+                outcome="followed_pending",
+                signature=signature,
+                report_id=report_id,
+                count=count,
+            )
+
+        return _claim(self.firestore_client.transaction())
+
+    def release_signature_claim(self, signature: str) -> None:
+        """Delete a pending signature claim so another request can reclaim it."""
+        self.firestore_client.collection(self.SIGNATURES_COLLECTION).document(
+            signature
+        ).delete()
+
+    def finalize_signature_report(
+        self,
+        signature: str,
+        report: LogAnalysisResponse,
+        source_log: dict | None = None,
+    ) -> str:
+        """
+        Persist the winner's Gemini analysis without a second contextual Gemini call.
+
+        Creates the reports document using the current signature count, then marks
+        the signature ready with the new report_id.
+        """
+        source_log = source_log or {}
+        created_at = datetime.now(timezone.utc)
+        gcp_severity = (source_log.get("severity") or "").upper()
+        insert_id = source_log.get("insertId")
+        _, meta = self._compute_signature(source_log)
+
+        sig_ref = self.firestore_client.collection(
+            self.SIGNATURES_COLLECTION
+        ).document(signature)
+        sig_snap = sig_ref.get()
+        sig_data = sig_snap.to_dict() or {} if sig_snap.exists else {}
+        incident_count = int(sig_data.get("count") or 1)
+
+        record = report.model_dump()
+        record["severity"] = gcp_severity
+        record["signature"] = signature
+        record["log_message"] = meta["log_message"]
+        if insert_id:
+            record["last_insert_id"] = insert_id
+
+        report_id = self._create_report_record(
+            record, created_at, incident_count=incident_count
+        )
+        sig_ref.update(
+            {
+                "status": self.SIGNATURE_STATUS_READY,
+                "report_id": report_id,
+                "updated_at": created_at,
+            }
+        )
+        return report_id
+
+    def record_signature_follower(
+        self,
+        signature: str,
+        report_id: str,
+        source_log: dict | None = None,
+    ) -> None:
+        """Increment report (and rely on claim txn for signature count) for a follower."""
+        source_log = source_log or {}
+        insert_id = source_log.get("insertId")
+        now = datetime.now(timezone.utc)
+        update_fields: Dict[str, Any] = {
+            "incident_count": firestore.Increment(1),
+            "last_seen_timestamp": now.isoformat().replace("+00:00", "Z"),
+        }
+        if insert_id:
+            update_fields["last_insert_id"] = insert_id
+        self.firestore_client.collection(self.REPORT_COLLECTION).document(
+            report_id
+        ).update(update_fields)
 
     def save_report(
         self, report: LogAnalysisResponse, source_log: dict | None = None
@@ -229,16 +369,12 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         source_log = source_log or {}
         gcp_severity = (source_log.get("severity") or "").upper()
         insert_id = source_log.get("insertId")
-        log_message = self.redactor.sanitize_single_log(source_log)["message"]
-        resource_labels = source_log.get("resource", {}).get("labels", {})
+        signature, meta = self._compute_signature(source_log)
 
         record = report.model_dump()
         record["severity"] = gcp_severity
-
-        string_to_hash = f"{resource_labels}|{gcp_severity}|{log_message}"
-        signature = hashlib.md5(string_to_hash.encode()).hexdigest()
         record["signature"] = signature
-        record["log_message"] = log_message
+        record["log_message"] = meta["log_message"]
 
         if insert_id:
             record["last_insert_id"] = insert_id

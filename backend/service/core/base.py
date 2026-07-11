@@ -1,8 +1,17 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, NamedTuple, Optional
 from datetime import datetime
 
 from service.core.models import LogAnalysisReport, LogAnalysisResponse, RepetitionCheckResult, ValidationResult
+
+
+class SignatureClaimResult(NamedTuple):
+    """Outcome of an atomic signature claim before Gemini analysis."""
+
+    outcome: str  # claimed | followed_ready | followed_pending
+    signature: str
+    report_id: str | None = None
+    count: int = 1
 
 
 class LogIngestor(ABC):
@@ -39,7 +48,29 @@ class LogIngestor(ABC):
         pass
 
     @abstractmethod
-    def detect_signature_repeat(self, source_log: Dict[str, Any], period: str = "2h") -> bool:
+    def claim_or_follow_signature(self, source_log: Dict[str, Any]) -> SignatureClaimResult:
+        pass
+
+    @abstractmethod
+    def release_signature_claim(self, signature: str) -> None:
+        pass
+
+    @abstractmethod
+    def finalize_signature_report(
+        self,
+        signature: str,
+        report: LogAnalysisResponse,
+        source_log: dict | None = None,
+    ) -> str:
+        pass
+
+    @abstractmethod
+    def record_signature_follower(
+        self,
+        signature: str,
+        report_id: str,
+        source_log: dict | None = None,
+    ) -> None:
         pass
 
 class GenAIAnalyzer(ABC):
