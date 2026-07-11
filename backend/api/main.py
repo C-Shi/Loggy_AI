@@ -66,9 +66,18 @@ def trigger(payload: MessagePublishedData):
 
     log_analyzer = LoggyAI.create(provider=ConfigItem().provider)
 
+    # Check if this exact log has been processed before
+    if log_analyzer.has_processed(log_entry):
+        return {"status": "ok", "message": "Log has already been processed"}
+
     try:
+        if log_analyzer.detect_signature_repeat(log_entry):
+             return {"status": "ok"}
+
         response = log_analyzer.analyze([log_entry])
-        log_analyzer.save_report(response, source_log=log_entry)
+        log_analyzer.save_report(response.incidents[0], source_log=log_entry)
+        log_analyzer.save_processed_event(log_entry, "COMPLETED")
         return {"status": "ok"}
     except (PromptValidationError, LogPayloadLimitError) as e:
-        raise HTTPException(400, detail=e.message)
+        log_analyzer.save_processed_event(log_entry, "FAILED")
+        raise HTTPException(400, detail=e.message)        

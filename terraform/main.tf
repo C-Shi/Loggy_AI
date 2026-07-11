@@ -16,6 +16,10 @@ data "google_cloud_run_v2_service" "loggy_ai" {
   location = "us-west1"
 }
 
+data "google_project" "project" {
+  project_id = var.project_id
+}
+
 resource "google_service_account" "sa_loggy_ai_runtime" {
   account_id   = "sa-loggy-ai-runtime"
   description  = "service account to run Loggy AI"
@@ -145,6 +149,7 @@ resource "google_project_iam_member" "loggy_ai_report_firestore" {
   }
 }
 
+# Covers: service_name == + severity == + created_at >= ORDER BY created_at DESC
 resource "google_firestore_index" "reports_dedup" {
   project    = var.project_id
   database   = google_firestore_database.loggy_ai_report.name
@@ -166,3 +171,79 @@ resource "google_firestore_index" "reports_dedup" {
   }
 }
 
+# Covers: signature == + created_at >= ORDER BY created_at DESC
+resource "google_firestore_index" "reports_by_signature" {
+  project    = var.project_id
+  database   = google_firestore_database.loggy_ai_report.name
+  collection = "reports"
+
+  fields {
+    field_path = "signature"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "created_at"
+    order      = "DESCENDING"
+  }
+}
+
+resource "google_pubsub_topic" "loggy_ai_dlq" {
+  name = "loggy-ai-dlq"
+
+  message_retention_duration = "604800s"
+}
+
+resource "google_pubsub_subscription" "loggy_ai_dlq_subscription" {
+  name                       = "loggy-ai-dlq-subscription"
+  project                    = var.project_id
+  topic                      = google_pubsub_topic.loggy_ai_dlq.name
+  message_retention_duration = "604800s"
+  retry_policy {
+    maximum_backoff = "600s"
+    minimum_backoff = "10s"
+  }
+
+  expiration_policy {
+    ttl = ""
+  }
+}
+
+resource "google_pubsub_topic_iam_member" "loggy_ai_dlq_writer" {
+  topic  = google_pubsub_topic.loggy_ai_dlq.name
+  role   = "roles/pubsub.publisher"
+  member = "serviceAccount:service-${data.google_project.project.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+resource "google_pubsub_subscription_iam_member" "loggy_ai_dlq_reader" {
+  subscription = google_pubsub_subscription.eventarc_trigger_subscription.name
+  role         = "roles/pubsub.subscriber"
+  member       = "serviceAccount:service-${data.google_project.project.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+import {
+  to = google_pubsub_subscription.eventarc_trigger_subscription
+  id = "projects/${var.project_id}/subscriptions/eventarc-us-west1-loggy-ai-trigger-sub-105"
+}
+
+resource "google_pubsub_subscription" "eventarc_trigger_subscription" {
+  name                       = "eventarc-us-west1-loggy-ai-trigger-sub-105"
+  project                    = var.project_id
+  topic                      = google_pubsub_topic.loggy_ai_pubsub.name
+  message_retention_duration = "86400s" # 1 day
+
+  retry_policy {
+    maximum_backoff = "600s"
+    minimum_backoff = "10s"
+  }
+
+  dead_letter_policy {
+    max_delivery_attempts = 5
+    dead_letter_topic     = google_pubsub_topic.loggy_ai_dlq.id
+  }
+
+  lifecycle {
+    # Eventarc owns push endpoint / OIDC — do not let TF overwrite it
+    ignore_changes = [push_config]
+  }
+}

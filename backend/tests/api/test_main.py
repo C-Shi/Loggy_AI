@@ -4,7 +4,7 @@ import pytest
 
 from service.core.models import LogAnalysisReport
 from service.helper.error import LogPayloadLimitError, PromptValidationError
-from tests.conftest import make_pubsub_payload
+from tests.conftest import make_pubsub_payload, sample_incident
 
 
 class TestHealth:
@@ -65,15 +65,50 @@ class TestRun:
 class TestTrigger:
     def test_success(self, client, patch_loggy_ai_create):
         _, adapter = patch_loggy_ai_create
-        log_entry = {"severity": "ERROR", "textPayload": "boom"}
-        adapter.analyze.return_value = LogAnalysisReport(incidents=[])
+        log_entry = {"severity": "ERROR", "textPayload": "boom", "insertId": "ins-1"}
+        incident = sample_incident()
+        adapter.analyze.return_value = LogAnalysisReport(incidents=[incident])
 
         response = client.post("/trigger", json=make_pubsub_payload(log_entry))
 
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+        adapter.has_processed.assert_called_once_with(log_entry)
+        adapter.detect_signature_repeat.assert_called_once_with(log_entry)
         adapter.analyze.assert_called_once_with([log_entry])
-        adapter.save_report.assert_called_once()
+        adapter.save_report.assert_called_once_with(incident, source_log=log_entry)
+        adapter.save_processed_event.assert_called_once_with(log_entry, "COMPLETED")
+
+    def test_skips_signature_repeat(self, client, patch_loggy_ai_create):
+        _, adapter = patch_loggy_ai_create
+        log_entry = {"severity": "ERROR", "textPayload": "boom", "insertId": "ins-1"}
+        adapter.detect_signature_repeat.return_value = True
+
+        response = client.post("/trigger", json=make_pubsub_payload(log_entry))
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        adapter.detect_signature_repeat.assert_called_once_with(log_entry)
+        adapter.analyze.assert_not_called()
+        adapter.save_report.assert_not_called()
+        adapter.save_processed_event.assert_not_called()
+
+    def test_skips_already_processed_log(self, client, patch_loggy_ai_create):
+        _, adapter = patch_loggy_ai_create
+        log_entry = {"severity": "ERROR", "textPayload": "boom", "insertId": "ins-1"}
+        adapter.has_processed.return_value = True
+
+        response = client.post("/trigger", json=make_pubsub_payload(log_entry))
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "message": "Log has already been processed",
+        }
+        adapter.has_processed.assert_called_once_with(log_entry)
+        adapter.analyze.assert_not_called()
+        adapter.save_report.assert_not_called()
+        adapter.save_processed_event.assert_not_called()
 
     @pytest.mark.parametrize(
         "error_cls,message",
@@ -87,9 +122,11 @@ class TestTrigger:
     ):
         _, adapter = patch_loggy_ai_create
         adapter.analyze.side_effect = error_cls(message)
-        log_entry = {"severity": "ERROR", "textPayload": "boom"}
+        log_entry = {"severity": "ERROR", "textPayload": "boom", "insertId": "ins-1"}
 
         response = client.post("/trigger", json=make_pubsub_payload(log_entry))
 
         assert response.status_code == 400
         assert response.json()["detail"] == message
+        adapter.save_processed_event.assert_called_once_with(log_entry, "FAILED")
+        adapter.has_processed.assert_called_once_with(log_entry)

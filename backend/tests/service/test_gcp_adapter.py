@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from service.core.gcp_adapter import GoogleCloudLoggingAdapter
-from service.core.models import LogAnalysisReport, RepetitionCheckResult
+from service.core.models import LogAnalysisReport, LogAnalysisResponse, RepetitionCheckResult
 from tests.conftest import sample_incident
 
 
@@ -41,6 +41,27 @@ class TestReportDocToDict:
         doc.to_dict.return_value = {"severity": "ERROR"}
         result = GoogleCloudLoggingAdapter._report_doc_to_dict(doc)
         assert result == {"severity": "ERROR", "id": "doc-123"}
+
+    def test_converts_firestore_datetimes_to_isoformat(self):
+        from google.api_core.datetime_helpers import DatetimeWithNanoseconds
+
+        ts = DatetimeWithNanoseconds(2026, 1, 1, 12, 0, 0)
+        doc = MagicMock()
+        doc.id = "doc-123"
+        doc.to_dict.return_value = {
+            "severity": "ERROR",
+            "first_seen_timestamp": ts,
+            "last_seen_timestamp": ts,
+            "created_at": ts,
+        }
+        result = GoogleCloudLoggingAdapter._report_doc_to_dict(doc)
+        assert result["id"] == "doc-123"
+        assert result["first_seen_timestamp"] == ts.isoformat()
+        assert result["last_seen_timestamp"] == ts.isoformat()
+        assert result["created_at"] == ts.isoformat()
+        import json
+
+        json.dumps(result)  # must be JSON-serializable
 
 
 class TestFetchLogs:
@@ -93,35 +114,39 @@ class TestSaveReport:
         adapter.fetch_report = MagicMock(return_value=[])
         return adapter, analyzer
 
-    def test_empty_incidents_is_noop(self, mock_gcp_adapter_clients):
-        adapter, _ = self._make_adapter(mock_gcp_adapter_clients)
-        adapter.save_report(LogAnalysisReport(incidents=[]))
-        adapter._create_report_record.assert_not_called()
+    def test_missing_source_log_creates_record(self, mock_gcp_adapter_clients):
+        adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
+        adapter.save_report(sample_incident())
+        adapter.fetch_report.assert_not_called()
+        analyzer.detect_contextual_repeat.assert_not_called()
+        adapter._create_report_record.assert_called_once()
 
     def test_missing_severity_skips_dedup(self, mock_gcp_adapter_clients):
         adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
-        report = LogAnalysisReport(incidents=[sample_incident()])
 
-        adapter.save_report(report, source_log={"insertId": "abc"})
+        adapter.save_report(sample_incident(), source_log={"insertId": "abc"})
 
         adapter.fetch_report.assert_not_called()
-        analyzer.check_repetition.assert_not_called()
+        analyzer.detect_contextual_repeat.assert_not_called()
         adapter._create_report_record.assert_called_once()
 
     def test_repetitive_incident_updates_existing(self, mock_gcp_adapter_clients):
         adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
         incident = sample_incident()
-        report = LogAnalysisReport(incidents=[incident])
         adapter.fetch_report.return_value = [{"id": "existing-doc"}]
-        analyzer.check_repetition.return_value = RepetitionCheckResult(
+        analyzer.detect_contextual_repeat.return_value = RepetitionCheckResult(
             is_repetitive=True,
             matching_report_id="existing-doc",
             reason="same root cause",
         )
 
         adapter.save_report(
-            report,
-            source_log={"severity": "ERROR", "insertId": "log-1"},
+            incident,
+            source_log={
+                "severity": "ERROR",
+                "insertId": "log-1",
+                "textPayload": "boom",
+            },
         )
 
         adapter._update_existing_report.assert_called_once_with(
@@ -131,18 +156,91 @@ class TestSaveReport:
 
     def test_new_incident_creates_record(self, mock_gcp_adapter_clients):
         adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
-        report = LogAnalysisReport(incidents=[sample_incident()])
         adapter.fetch_report.return_value = [{"id": "other-doc"}]
-        analyzer.check_repetition.return_value = RepetitionCheckResult(
+        analyzer.detect_contextual_repeat.return_value = RepetitionCheckResult(
             is_repetitive=False,
             matching_report_id=None,
             reason="different issue",
         )
 
         adapter.save_report(
-            report,
-            source_log={"severity": "ERROR", "insertId": "log-2"},
+            sample_incident(),
+            source_log={
+                "severity": "ERROR",
+                "insertId": "log-2",
+                "textPayload": "boom",
+            },
         )
 
         adapter._create_report_record.assert_called_once()
         adapter._update_existing_report.assert_not_called()
+
+    def test_no_candidates_creates_record(self, mock_gcp_adapter_clients):
+        adapter, analyzer = self._make_adapter(mock_gcp_adapter_clients)
+        adapter.fetch_report.return_value = []
+
+        adapter.save_report(
+            sample_incident(),
+            source_log={
+                "severity": "ERROR",
+                "insertId": "log-3",
+                "textPayload": "boom",
+            },
+        )
+
+        analyzer.detect_contextual_repeat.assert_not_called()
+        adapter._create_report_record.assert_called_once()
+        adapter._update_existing_report.assert_not_called()
+
+
+class TestProcessedEvents:
+    def test_has_processed_true_when_doc_exists(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        doc = MagicMock()
+        doc.exists = True
+        adapter.firestore_client.collection.return_value.document.return_value.get.return_value = (
+            doc
+        )
+
+        assert adapter.has_processed({"insertId": "ins-1"}) is True
+        adapter.firestore_client.collection.assert_called_with("processed_events")
+        adapter.firestore_client.collection.return_value.document.assert_called_with(
+            "ins-1"
+        )
+
+    def test_has_processed_false_when_doc_missing(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        doc = MagicMock()
+        doc.exists = False
+        adapter.firestore_client.collection.return_value.document.return_value.get.return_value = (
+            doc
+        )
+
+        assert adapter.has_processed({"insertId": "ins-1"}) is False
+
+    def test_has_processed_requires_insert_id(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        with pytest.raises(ValueError, match="Insert ID is required"):
+            adapter.has_processed({})
+
+    def test_save_processed_event_writes_status(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        doc_ref = adapter.firestore_client.collection.return_value.document.return_value
+
+        with patch("service.core.gcp_adapter.datetime") as mock_datetime:
+            now = datetime(2026, 1, 1, 12, 0, 0)
+            mock_datetime.now.return_value = now
+            adapter.save_processed_event({"insertId": "ins-1"}, "COMPLETED")
+
+        adapter.firestore_client.collection.assert_called_with("processed_events")
+        adapter.firestore_client.collection.return_value.document.assert_called_with(
+            "ins-1"
+        )
+        doc_ref.set.assert_called_once_with(
+            {"status": "COMPLETED", "processed_timestamp": now}
+        )
+
+    def test_save_processed_event_requires_insert_id(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        with pytest.raises(ValueError, match="Insert ID is required"):
+            adapter.save_processed_event({}, "COMPLETED")

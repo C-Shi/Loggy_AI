@@ -55,6 +55,30 @@ class LogRedactor:
         )
         return value
 
+    def sanitize_single_log(self, raw_log: dict) -> dict:
+        # Extract only core operational telemetry fields to save prompt window tokens
+        message = (
+            raw_log.get("jsonPayload", {}).get("message")
+            or raw_log.get("textPayload")
+            or ""
+        )
+
+        # Clean up message whitespace and trailing newlines locally
+        if isinstance(message, str):
+            message = " ".join(message.split())
+
+        # Apply regex string scanning rules
+        redacted_message = self._redact_value(message)
+
+        operational_fields = {
+            "timestamp": raw_log.get("timestamp"),
+            "severity": raw_log.get("severity"),
+            "resource": raw_log.get("resource"),
+            "message": redacted_message,
+        }
+
+        return operational_fields
+
     def sanitize_log_batch(self, raw_logs: list) -> list:
         """
         Accepts a list of raw log items, filters out unnecessary fields,
@@ -66,27 +90,7 @@ class LogRedactor:
             if not isinstance(log, dict):
                 continue
 
-            # Extract only core operational telemetry fields to save prompt window tokens
-            message = (
-                log.get("jsonPayload", {}).get("message")
-                or log.get("textPayload")
-                or ""
-            )
-
-            # Clean up message whitespace and trailing newlines locally
-            if isinstance(message, str):
-                message = " ".join(message.split())
-
-            # Apply regex string scanning rules
-            redacted_message = self._redact_value(message)
-
-            operational_fields = {
-                "timestamp": log.get("timestamp"),
-                "severity": log.get("severity"),
-                "resource": log.get("resource"),
-                "message": redacted_message,
-            }
-
+            operational_fields = self.sanitize_single_log(log)
             sanitized_list.append(operational_fields)
 
         return sanitized_list

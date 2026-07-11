@@ -1,5 +1,6 @@
 import logging
 import re
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -9,6 +10,7 @@ from google.cloud import firestore, logging as cloud_logging
 from service.core.base import LogIngestor
 from service.core.models import LogAnalysisReport, LogAnalysisResponse
 from service.core.base import GenAIAnalyzer
+import service.helper.log_redactor as log_redactor
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
 
     REPORT_DATABASE = "loggy-ai-report"
     REPORT_COLLECTION = "reports"
+    PROCESSED_EVENTS_COLLECTION = "processed_events"
 
     SEVERITY_LEVEL = [
         "DEBUG",
@@ -86,6 +89,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
             project=self.project, database=self.REPORT_DATABASE
         )
         self.analyzer = ai_tool
+        self.redactor = log_redactor.LogRedactor()
 
     @staticmethod
     def _parse_period(period: str) -> timedelta:
@@ -104,9 +108,23 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         return timedelta(**{unit: amount})
 
     @staticmethod
+    def _json_safe_value(value: Any) -> Any:
+        """Convert Firestore/datetime values into JSON-serializable forms."""
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {
+                key: GoogleCloudLoggingAdapter._json_safe_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [GoogleCloudLoggingAdapter._json_safe_value(item) for item in value]
+        return value
+
+    @staticmethod
     def _report_doc_to_dict(doc: firestore.DocumentSnapshot) -> Dict[str, Any]:
         """Convert a Firestore document snapshot to a plain dictionary with its ID."""
-        data = doc.to_dict() or {}
+        data = GoogleCloudLoggingAdapter._json_safe_value(doc.to_dict() or {})
         data["id"] = doc.id
         return data
 
@@ -115,6 +133,7 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         period: str,
         severity: Any = _UNSET,
         service_name: Any = _UNSET,
+        signature: Any = _UNSET,
     ) -> List[Dict[str, Any]]:
         """
         Fetch AI analysis reports from Firestore for the given lookback period.
@@ -140,6 +159,11 @@ class GoogleCloudLoggingAdapter(LogIngestor):
         if severity is not _UNSET:
             query = query.where(
                 filter=firestore.FieldFilter("severity", "==", severity)
+            )
+
+        if signature is not _UNSET:
+            query = query.where(
+                filter=firestore.FieldFilter("signature", "==", signature)
             )
 
         query = query.where(
@@ -170,8 +194,26 @@ class GoogleCloudLoggingAdapter(LogIngestor):
     def _candidate_ids(self, candidates: List[Dict[str, Any]]) -> set[str]:
         return {candidate["id"] for candidate in candidates if candidate.get("id")}
 
+    def detect_signature_repeat(self, source_log: Dict[str, Any], period: str = "2h") -> bool:
+        log_message = self.redactor.sanitize_single_log(source_log)["message"]
+        gcp_severity = ((source_log or {}).get("severity") or "").upper()
+        resource_labels = source_log.get("resource", {}).get("labels", {})
+
+        string_to_hash = f"{resource_labels}|{gcp_severity}|{log_message}"
+        signature = hashlib.md5(string_to_hash.encode()).hexdigest()
+
+        signature_repeats = self.fetch_report(period=period, signature=signature)
+        if len(signature_repeats) > 0:
+            self.firestore_client.collection(self.REPORT_COLLECTION).document(signature_repeats[0]["id"]).update({
+                "incident_count": firestore.Increment(1),
+                "last_seen_timestamp": datetime.now(timezone.utc)
+            })
+            return True
+        return False
+
+
     def save_report(
-        self, report: LogAnalysisReport, source_log: dict | None = None
+        self, report: LogAnalysisResponse, source_log: dict | None = None
     ) -> None:
         """
         Persist each incident in an analysis report to Firestore.
@@ -182,42 +224,48 @@ class GoogleCloudLoggingAdapter(LogIngestor):
             report: Structured analysis output from the AI analyzer.
             source_log: Optional source GCP log entry used to inject severity.
         """
-        if not report.incidents:
-            return
 
         created_at = datetime.now(timezone.utc)
-        gcp_severity = ((source_log or {}).get("severity") or "").upper()
-        insert_id = (source_log or {}).get("insertId")
+        source_log = source_log or {}
+        gcp_severity = (source_log.get("severity") or "").upper()
+        insert_id = source_log.get("insertId")
+        log_message = self.redactor.sanitize_single_log(source_log)["message"]
+        resource_labels = source_log.get("resource", {}).get("labels", {})
 
-        for incident in report.incidents:
-            record = incident.model_dump()
-            record["severity"] = gcp_severity
-            if insert_id:
-                record["last_insert_id"] = insert_id
+        record = report.model_dump()
+        record["severity"] = gcp_severity
 
-            if not gcp_severity:
-                logger.warning(
-                    "Missing GCP severity on source log; skipping dedup for incident"
-                )
-                self._create_report_record(record, created_at)
-                continue
+        string_to_hash = f"{resource_labels}|{gcp_severity}|{log_message}"
+        signature = hashlib.md5(string_to_hash.encode()).hexdigest()
+        record["signature"] = signature
+        record["log_message"] = log_message
 
-            candidates = self.fetch_report(
-                "2h", severity=gcp_severity, service_name=incident.service_name
+        if insert_id:
+            record["last_insert_id"] = insert_id
+
+        if not gcp_severity:
+            logger.warning(
+                "Missing GCP severity on source log; skipping dedup for incident"
             )
-
-            if candidates:
-                result = self.analyzer.check_repetition(incident, candidates)
-                matching_id = result.matching_report_id
-                if (
-                    result.is_repetitive
-                    and matching_id
-                    and matching_id in self._candidate_ids(candidates)
-                ):
-                    self._update_existing_report(matching_id, incident, insert_id)
-                    continue
-
             self._create_report_record(record, created_at)
+            return
+
+        candidates = self.fetch_report(
+            "2h", severity=gcp_severity, service_name=record["service_name"]
+        )
+
+        if candidates:
+            result = self.analyzer.detect_contextual_repeat(report, candidates)
+            matching_id = result.matching_report_id
+            if (
+                result.is_repetitive
+                and matching_id
+                and matching_id in self._candidate_ids(candidates)
+            ):
+                self._update_existing_report(matching_id, report, insert_id)
+                return
+
+        self._create_report_record(record, created_at)
 
     def fetch_logs(
         self,
@@ -309,3 +357,22 @@ class GoogleCloudLoggingAdapter(LogIngestor):
     def analyze(self, logs: List[Dict[str, Any]]) -> LogAnalysisReport:
         """Run AI analysis on a batch of Cloud Logging entries."""
         return self.analyzer.analyze_logs(logs)
+
+    def has_processed(self, log: Dict[str, Any]) -> bool:
+        """Check if the given log has been processed before."""
+        insert_id = log.get("insertId")
+        if not insert_id:
+            raise ValueError("Insert ID is required to check if log has been processed")
+
+        return self.firestore_client.collection(self.PROCESSED_EVENTS_COLLECTION).document(insert_id).get().exists
+
+    def save_processed_event(self, log: Dict[str, Any], status: str) -> None:
+        """Save the given log as a processed event."""
+        insert_id = log.get("insertId")
+        if not insert_id:
+            raise ValueError("Insert ID is required to save a processed event")
+
+        self.firestore_client.collection(self.PROCESSED_EVENTS_COLLECTION).document(insert_id).set({
+            "status": status,
+            "processed_timestamp": datetime.now(timezone.utc)
+        })

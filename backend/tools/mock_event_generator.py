@@ -31,7 +31,7 @@ def build_log_entry(
     project_id: str = PROJECT_ID,
     severity: str = "ERROR",
     service_name: str = "auth-service",
-    message: str = "Failed to write record to secondary database cluster",
+    message: str = "Unable to write record to secondary database cluster",
     error_code: str = "DB_CONN_TIMEOUT",
     insert_id: str | None = None,
     timestamp: str | None = None,

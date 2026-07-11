@@ -19,7 +19,7 @@ class LogIngestor(ABC):
         pass
 
     @abstractmethod
-    def save_report(self, report: LogAnalysisReport, source_log: dict | None = None) -> None:
+    def save_report(self, report: LogAnalysisResponse, source_log: dict | None = None) -> None:
         pass
 
     @abstractmethod
@@ -30,13 +30,25 @@ class LogIngestor(ABC):
     def analyze(self, logs: List[Dict[str, Any]]) -> Dict[str, Any]:
         pass
 
+    @abstractmethod
+    def has_processed(self, log: Dict[str, Any]) -> bool:
+        pass
+
+    @abstractmethod
+    def save_processed_event(self, log: Dict[str, Any], status: str) -> None:
+        pass
+
+    @abstractmethod
+    def detect_signature_repeat(self, source_log: Dict[str, Any], period: str = "2h") -> bool:
+        pass
+
 class GenAIAnalyzer(ABC):
     @abstractmethod
     def analyze_logs(self, logs: List[Any], instruction: Optional[str] = None) -> LogAnalysisReport:
         pass
 
     @abstractmethod
-    def check_repetition(self, incident: LogAnalysisResponse, candidates: List[Dict[str, Any]]) -> RepetitionCheckResult:
+    def detect_contextual_repeat(self, incident: LogAnalysisResponse, candidates: List[Dict[str, Any]]) -> RepetitionCheckResult:
         pass
 
     @abstractmethod
