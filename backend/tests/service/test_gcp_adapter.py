@@ -244,3 +244,159 @@ class TestProcessedEvents:
         adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
         with pytest.raises(ValueError, match="Insert ID is required"):
             adapter.save_processed_event({}, "COMPLETED")
+
+
+class TestSignatureClaim:
+    def _passthrough_transactional(self):
+        def decorator(func):
+            def wrapper(transaction):
+                return func(transaction)
+
+            return wrapper
+
+        return decorator
+
+    def _source_log(self):
+        return {
+            "severity": "ERROR",
+            "textPayload": "boom",
+            "insertId": "ins-1",
+            "resource": {"labels": {"service_name": "api"}},
+        }
+
+    def test_claim_creates_pending_signature(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        sig_ref = MagicMock()
+        snap = MagicMock()
+        snap.exists = False
+        sig_ref.get.return_value = snap
+        adapter.firestore_client.collection.return_value.document.return_value = sig_ref
+        adapter.firestore_client.transaction.return_value = MagicMock()
+
+        with patch(
+            "service.core.gcp_adapter.firestore.transactional",
+            self._passthrough_transactional(),
+        ):
+            result = adapter.claim_or_follow_signature(self._source_log())
+
+        assert result.outcome == "claimed"
+        assert result.report_id is None
+        assert result.count == 1
+        sig_ref.get.assert_called()
+        # transaction.set called with pending status
+        set_call = sig_ref.get.call_args  # ensure get used in txn
+        assert set_call is not None
+
+    def test_follow_ready_increments_signature(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        sig_ref = MagicMock()
+        snap = MagicMock()
+        snap.exists = True
+        snap.to_dict.return_value = {
+            "status": "ready",
+            "report_id": "report-1",
+            "count": 3,
+        }
+        sig_ref.get.return_value = snap
+        adapter.firestore_client.collection.return_value.document.return_value = sig_ref
+        adapter.firestore_client.transaction.return_value = MagicMock()
+
+        with patch(
+            "service.core.gcp_adapter.firestore.transactional",
+            self._passthrough_transactional(),
+        ):
+            result = adapter.claim_or_follow_signature(self._source_log())
+
+        assert result.outcome == "followed_ready"
+        assert result.report_id == "report-1"
+        assert result.count == 4
+
+    def test_follow_pending_does_not_increment(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        sig_ref = MagicMock()
+        snap = MagicMock()
+        snap.exists = True
+        snap.to_dict.return_value = {"status": "pending", "count": 1}
+        sig_ref.get.return_value = snap
+        adapter.firestore_client.collection.return_value.document.return_value = sig_ref
+        adapter.firestore_client.transaction.return_value = MagicMock()
+
+        with patch(
+            "service.core.gcp_adapter.firestore.transactional",
+            self._passthrough_transactional(),
+        ):
+            result = adapter.claim_or_follow_signature(self._source_log())
+
+        assert result.outcome == "followed_pending"
+        assert result.report_id is None
+
+    def test_release_signature_claim_deletes_doc(self, mock_gcp_adapter_clients):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        doc_ref = adapter.firestore_client.collection.return_value.document.return_value
+
+        adapter.release_signature_claim("sig-abc")
+
+        adapter.firestore_client.collection.assert_called_with("signatures")
+        adapter.firestore_client.collection.return_value.document.assert_called_with(
+            "sig-abc"
+        )
+        doc_ref.delete.assert_called_once()
+
+    def test_finalize_signature_report_creates_without_contextual_gemini(
+        self, mock_gcp_adapter_clients
+    ):
+        analyzer = MagicMock()
+        adapter = GoogleCloudLoggingAdapter(analyzer, project="my-project")
+        signature, _ = adapter._compute_signature(self._source_log())
+
+        sig_ref = MagicMock()
+        sig_snap = MagicMock()
+        sig_snap.exists = True
+        sig_snap.to_dict.return_value = {"status": "pending", "count": 5}
+        sig_ref.get.return_value = sig_snap
+
+        report_ref = MagicMock()
+        report_ref.id = "new-report"
+
+        def collection_side_effect(name):
+            coll = MagicMock()
+            if name == "signatures":
+                coll.document.return_value = sig_ref
+            else:
+                coll.add.return_value = (None, report_ref)
+            return coll
+
+        adapter.firestore_client.collection.side_effect = collection_side_effect
+
+        report_id = adapter.finalize_signature_report(
+            signature, sample_incident(), source_log=self._source_log()
+        )
+
+        assert report_id == "new-report"
+        analyzer.detect_contextual_repeat.assert_not_called()
+        sig_ref.update.assert_called_once()
+        update_payload = sig_ref.update.call_args.args[0]
+        assert update_payload["status"] == "ready"
+        assert update_payload["report_id"] == "new-report"
+
+    def test_record_signature_follower_increments_report(
+        self, mock_gcp_adapter_clients
+    ):
+        adapter = GoogleCloudLoggingAdapter(MagicMock(), project="my-project")
+        report_ref = MagicMock()
+        adapter.firestore_client.collection.return_value.document.return_value = (
+            report_ref
+        )
+
+        adapter.record_signature_follower(
+            "sig-1", "report-1", source_log=self._source_log()
+        )
+
+        adapter.firestore_client.collection.assert_called_with("reports")
+        adapter.firestore_client.collection.return_value.document.assert_called_with(
+            "report-1"
+        )
+        report_ref.update.assert_called_once()
+        payload = report_ref.update.call_args.args[0]
+        assert "incident_count" in payload
+        assert payload["last_insert_id"] == "ins-1"

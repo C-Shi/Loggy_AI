@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from service.core.base import SignatureClaimResult
 from service.core.models import LogAnalysisReport
 
 
@@ -20,7 +21,17 @@ class FakeLogIngestor:
         self.save_report = MagicMock()
         self.has_processed = MagicMock(return_value=False)
         self.save_processed_event = MagicMock()
-        self.detect_signature_repeat = MagicMock(return_value=False)
+        self.claim_or_follow_signature = MagicMock(
+            return_value=SignatureClaimResult(
+                outcome="claimed",
+                signature="sig-1",
+                report_id=None,
+                count=1,
+            )
+        )
+        self.release_signature_claim = MagicMock()
+        self.finalize_signature_report = MagicMock(return_value="report-1")
+        self.record_signature_follower = MagicMock()
 
 
 @pytest.fixture
