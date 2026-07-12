@@ -61,55 +61,7 @@ The Dashboard is an Identity-Aware Proxy (IAP)–protected React + Express Cloud
 
 ## Architecture
 
-```mermaid
-flowchart TB
-  subgraph ingestion [Ingestion]
-    CL["<img src='asset/logo/Cloud%20Logging.svg' width='40'/><br/>Cloud Logging"]
-    Sink["<img src='asset/logo/Cloud%20Logging.svg' width='40'/><br/>Log Sink"]
-    PS["<img src='asset/logo/PubSub.svg' width='40'/><br/>Pub/Sub"]
-    DLQ["<img src='asset/logo/PubSub.svg' width='40'/><br/>DLQ"]
-    EA["<img src='asset/logo/Eventarc.svg' width='40'/><br/>Eventarc"]
-    CL --> Sink
-    Sink --> PS
-    PS --> EA
-    PS -.-> DLQ
-  end
-
-  subgraph analyzer [Analyzer]
-    Req["Request<br/>LQL"]
-    CR_A["<img src='asset/logo/Cloud%20Run.svg' width='40'/><br/>Analyzer"]
-    GeminiNode["<img src='asset/logo/Gemini.svg' width='40'/><br/>Gemini"]
-    Req --> CR_A
-    CR_A --> GeminiNode
-  end
-
-  subgraph opsUI [Operations]
-    IAPNode["<img src='asset/logo/Identity-Aware%20Proxy.svg' width='40'/><br/>IAP"]
-    CR_D["<img src='asset/logo/Cloud%20Run.svg' width='40'/><br/>Dashboard"]
-    IAPNode --> CR_D
-  end
-
-  FS["<img src='asset/logo/Firestore.svg' width='40'/><br/>Firestore"]
-
-  subgraph platform [Platform Support]
-    SM["<img src='asset/logo/Secret%20Manager.svg' width='40'/><br/>Secret Manager"]
-    AR["<img src='asset/logo/Artifact%20Registry.svg' width='40'/><br/>Artifact Registry"]
-    IAM["<img src='asset/logo/Identity%20And%20Access%20Management.svg' width='40'/><br/>IAM"]
-    GCS["<img src='asset/logo/Cloud%20Storage.svg' width='40'/><br/>Cloud Storage"]
-  end
-
-  CL --> Req
-  EA --> CR_A
-  GeminiNode --> FS
-  CR_D --> FS
-  SM -.-> CR_A
-  AR -.-> CR_A
-  AR -.-> CR_D
-  IAM -.-> CR_A
-  IAM -.-> CR_D
-  IAM -.-> IAPNode
-  GCS -.-> AR
-```
+![Loggy AI Architecture](docs/architecture.svg)
 
 - **Request path:** Cloud Logging queried via LQL/filters → Analyzer → Gemini → structured analysis returned to the caller (on the fly; any matching log scope).
 - **Event path:** ERROR sink → Pub/Sub → Eventarc → Analyzer → Gemini → Firestore reports; undeliverable messages land in the DLQ after retries.
