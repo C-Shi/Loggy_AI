@@ -23,7 +23,7 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Verify Terraform and Backend Tests both passed
+      - name: Verify Terraform and Service Tests both passed
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.workflow_run.head_sha }}
@@ -40,7 +40,7 @@ jobs:
             fi
           }
           check_workflow "Terraform"
-          check_workflow "Backend Tests"
+          check_workflow "Service Tests"
 
   build_and_deploy_service:
     needs: verify-prerequisites
@@ -63,7 +63,7 @@ jobs:
       - name: Build Image
         run: |
           gcloud auth configure-docker us-west1-docker.pkg.dev
-          cd backend
+          cd service
           COMMIT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
           docker build --platform="linux/amd64" -t loggy-ai:$COMMIT_SHA .
           docker tag loggy-ai:$COMMIT_SHA us-west1-docker.pkg.dev/${{ vars.GOOGLE_PROJECT }}/loggy-ai-service/loggy-ai:$COMMIT_SHA
