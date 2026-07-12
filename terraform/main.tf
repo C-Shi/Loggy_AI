@@ -11,13 +11,19 @@ provider "google" {
   project = var.project_id
 }
 
+data "google_project" "project" {
+  project_id = var.project_id
+}
+
+
 data "google_cloud_run_v2_service" "loggy_ai" {
   name     = "loggy-ai-service"
   location = "us-west1"
 }
 
-data "google_project" "project" {
-  project_id = var.project_id
+data "google_cloud_run_v2_service" "loggy_ai_dashboard" {
+  name     = "loggy-ai-dashboard"
+  location = "us-west1"
 }
 
 resource "google_service_account" "sa_loggy_ai_runtime" {
@@ -46,10 +52,10 @@ resource "google_cloud_run_v2_service_iam_member" "loggy_ai_caller_iam" {
 }
 
 
-resource "google_artifact_registry_repository" "loggy-ai-image" {
+resource "google_artifact_registry_repository" "loggy-ai-service" {
   location               = "us-west1"
-  repository_id          = "loggy-ai-image"
-  description            = "repository to store loggy-ai-image"
+  repository_id          = "loggy-ai-service"
+  description            = "repository to store loggy-ai-service"
   format                 = "docker"
   cleanup_policy_dry_run = false
   cleanup_policies {
@@ -66,6 +72,23 @@ resource "google_artifact_registry_repository" "loggy-ai-image" {
 
 }
 
+resource "google_artifact_registry_repository" "loggy-ai-dashboard" {
+  location      = "us-west1"
+  repository_id = "loggy-ai-dashboard"
+  description   = "repository to store loggy-ai-dashboard"
+  format        = "docker"
+  cleanup_policies {
+    id     = "keep-one"
+    action = "KEEP"
+    most_recent_versions {
+      keep_count = 1
+    }
+  }
+
+  vulnerability_scanning_config {
+    enablement_config = "DISABLED"
+  }
+}
 resource "google_secret_manager_secret" "gemini_key" {
   secret_id = "gemini-key"
 
@@ -247,3 +270,31 @@ resource "google_pubsub_subscription" "eventarc_trigger_subscription" {
     ignore_changes = [push_config]
   }
 }
+
+# IAP for loggy-ai-dashboard (Cloud Run itself is deployed by GitHub Actions with --iap).
+# Prerequisite: service must already exist (data source above) with --no-allow-unauthenticated.
+
+# Let the IAP service agent invoke Cloud Run after a user passes the IAP allowlist.
+resource "google_cloud_run_v2_service_iam_member" "loggy_ai_dashboard_iap_invoker" {
+  project  = var.project_id
+  name     = data.google_cloud_run_v2_service.loggy_ai_dashboard.name
+  location = data.google_cloud_run_v2_service.loggy_ai_dashboard.location
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:service-${data.google_project.project.number}@gcp-sa-iap.iam.gserviceaccount.com"
+}
+
+# Authoritative role binding is created once with an empty member list; members are
+# managed only in the GCP console afterward so emails never appear in git.
+resource "google_iap_web_cloud_run_service_iam_binding" "loggy_ai_dashboard_iap_access" {
+  project                = var.project_id
+  location               = data.google_cloud_run_v2_service.loggy_ai_dashboard.location
+  cloud_run_service_name = data.google_cloud_run_v2_service.loggy_ai_dashboard.name
+  role                   = "roles/iap.httpsResourceAccessor"
+  members                = []
+
+  lifecycle {
+    ignore_changes = [members]
+  }
+}
+
+

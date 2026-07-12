@@ -60,7 +60,7 @@ The current iteration establishes a secure, containerized, and automated end-to-
    ```sh
    python -m venv venv
    source venv/bin/activate
-   cd backend
+   cd service
    pip install -r requirements.txt
    fastapi dev api/main.py
    ```
@@ -69,13 +69,13 @@ The current iteration establishes a secure, containerized, and automated end-to-
 
    ```
    gcloud auth configure-docker us-west1-docker.pkg.dev
-   cd backend
+   cd service
    docker build --platform="linux/amd64" -t loggy-ai:latest .
-   docker tag loggy-ai:latest us-west1-docker.pkg.dev/devops-cert-440119/loggy-ai-image/loggy-ai:latest
-   docker push us-west1-docker.pkg.dev/devops-cert-440119/loggy-ai-image/loggy-ai:latest
+   docker tag loggy-ai:latest us-west1-docker.pkg.dev/devops-cert-440119/loggy-ai-service/loggy-ai:latest
+   docker push us-west1-docker.pkg.dev/devops-cert-440119/loggy-ai-service/loggy-ai:latest
 
    gcloud run deploy loggy-ai-service \
-   --image=us-west1-docker.pkg.dev/devops-cert-440119/loggy-ai-image/loggy-ai:latest \
+   --image=us-west1-docker.pkg.dev/devops-cert-440119/loggy-ai-service/loggy-ai:latest \
    --region=us-west1 \
    --allow-unauthenticated \
    --platform=managed \

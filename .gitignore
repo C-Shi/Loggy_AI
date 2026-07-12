@@ -5,3 +5,5 @@ terraform.tfvars
 .terraform.lock.hcl
 .env
 .cursor/
+node_modules/
+dashboard/dist/
